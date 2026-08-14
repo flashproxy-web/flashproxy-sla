@@ -209,6 +209,11 @@ and website users read statements with no grant change.
   script — and passing secrets as `-var-file` keeps it that way.
   After changing a secret, re-upload it or the S3 copy silently goes stale:
   `aws s3 cp terraform.tfvars s3://<bucket>/<prefix>/secrets/terraform.tfvars --sse AES256`.
+- **`deploy/CLICKHOUSE-SETUP.md`** — the full human tutorial for standing up the datastore on
+  a new box: install, config (incl. **system-log TTLs + `keep_free_space_bytes`**, whose absence
+  caused the 2026-08-14 outage), schema, migrations, roles, Cloudflare tunnel, a security
+  verification checklist, and day-2 ops (disk alerting, backups, truncation rules).
+  Start here; the prompt file below is the same deployment addressed to an agent.
 - **`deploy/clickhouse-deploy-prompt.md`** + **`deploy/bootstrap-roles.sh`** — runbook + script
   for the self-hosted ClickHouse: loopback bind, UTC timezone, `select_from_system_db_requires_grant`
   + query masking (so the published reader can't read `system.*`), the schema incl. the ledger,
@@ -248,6 +253,15 @@ and website users read statements with no grant change.
   un-migrated schema. (Old code is forward-compatible with the migrated schema, so migrate first
   is always safe.) Note: existing MergeTree sort keys can't be ALTERed (e.g. adding `vantage`),
   so the live table keeps its old `ORDER BY` — that's only a pruning optimization.
+- **The ClickHouse box fills up, and `system.*` is what fills it.** On 2026-08-14 the page
+  went dark for hours: all three workers healthy, every insert rejected with
+  `Code: 243 … NOT_ENOUGH_SPACE`. Probe data was only ~2 months old (nowhere near the 400-day
+  TTL) — the space went to un-TTL'd ClickHouse **log tables**, which grow with query volume,
+  not data volume. Fixes live in `deploy/CLICKHOUSE-SETUP.md` §4.4. Two things to know when
+  it happens: the workers **self-heal** once space is freed (they retain the batch and retry
+  ~2×/s — restarting them *discards* that buffer), and the built-in monitor **cannot alert**,
+  because it writes its events to the same full database. Disk alerting must live outside
+  this stack.
 - **Truncating / resetting data:** STOP the workers → `TRUNCATE` → START the workers. The chain
   head (next `seq` + prev `entry_hash`) lives in worker memory, so truncating under a running
   worker leaves the new ledger starting mid-chain and `cmd/verify` reports a break. A restart
