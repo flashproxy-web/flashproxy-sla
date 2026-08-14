@@ -264,8 +264,25 @@ and website users read statements with no grant change.
   this stack.
 - **Truncating / resetting data:** STOP the workers → `TRUNCATE` → START the workers. The chain
   head (next `seq` + prev `entry_hash`) lives in worker memory, so truncating under a running
-  worker leaves the new ledger starting mid-chain and `cmd/verify` reports a break. A restart
-  re-runs `resumeChain`, sees an empty ledger, and re-seeds from seq 1.
+  worker leaves the new ledger starting mid-chain and `cmd/verify` reports a break.
+  **`resumeChain` derives the head from `MAX(seq)` in `probe_raw`, NOT from the ledger**
+  (`cmd/worker/main.go` — it guards against seq reuse after a crash). Consequences when you
+  reset (verified the hard way during the 2026-08-14 hostname cutover):
+  - Truncating **`sla.ledger` only** (keeping `probe_raw`, e.g. to preserve recovered rows) does
+    NOT reset seq to 1. The worker resumes at `probe_raw`'s max seq and re-roots the chain there
+    with `prev = GenesisHash`. That still **passes `cmd/verify`** — `verifyStream` roots every
+    chain at Genesis against its *first present* entry and does not require seq to start at 1 —
+    the chain just carries a cosmetically high starting seq. The pre-reset rows below the new
+    head become uncovered-by-ledger (honest data-loss gap), which is fine.
+  - To genuinely reset to seq 1 you must truncate **both** `probe_raw` and `ledger` (you lose the
+    data). Only the `events` stream resets to 1 on a ledger-only truncate, because its
+    `ProbeMaxSeq` reads `probe_raw WHERE stream='events'`, which is always empty.
+  - **Also truncate `sla.ledger_checkpoints`.** Old checkpoints attest heads of the pre-reset
+    chain; the `checkpointLoop` re-signs current heads within `checkpoint_every_sec`. Leaving
+    them is a latent false-positive: a stream that re-seeds low (like `events` → seq 1) will over
+    time re-reach the old checkpoint seqs with *different* entry_hashes, and `cmd/verify` will
+    then flag tampering. (High-seq `aws-*` streams don't collide, but the stale checkpoints still
+    read as orphaned.)
 
 ## Sibling repos
 
