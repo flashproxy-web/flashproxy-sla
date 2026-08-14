@@ -148,8 +148,12 @@ CREATE TABLE IF NOT EXISTS sla.probe_1m
     vantage             LowCardinality(String),
     package             LowCardinality(String),
     scenario            LowCardinality(String),
-    attempts            UInt64,
-    successes           UInt64,
+    -- SimpleAggregateFunction(sum,…), NOT plain UInt64: this is an AggregatingMergeTree,
+    -- and ClickHouse 26.x rejects a bare aggregatable column here (Code 36 — on merge it
+    -- would collapse rows and keep an arbitrary value). sum is the correct reducer, and the
+    -- MV below inserts raw count()/sum(success), which SimpleAggregateFunction consumes directly.
+    attempts            SimpleAggregateFunction(sum, UInt64),
+    successes           SimpleAggregateFunction(sum, UInt64),
     connect_ms_state    AggregateFunction(quantilesTDigest(0.5, 0.95, 0.99), UInt32),
     connect_ms_avg_st   AggregateFunction(avg, UInt32),
     ttfb_ms_state       AggregateFunction(quantilesTDigest(0.5, 0.95), UInt32),
