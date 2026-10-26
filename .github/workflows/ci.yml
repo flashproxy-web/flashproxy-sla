@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false # no go.sum (stdlib only), so nothing to cache
+
+      - name: gofmt
+        run: |
+          out=$(gofmt -l .)
+          if [ -n "$out" ]; then echo "needs gofmt:"; echo "$out"; exit 1; fi
+
+      - name: vet
+        run: make vet
+
+      - name: test
+        run: make test
+
+      - name: build
+        run: make build # CGO_ENABLED=0 -trimpath, all five binaries
+
+      - name: no new dependencies
+        run: |
+          if [ -f go.sum ] || grep -q '^require' go.mod; then
+            echo "stdlib-only is load-bearing: go.mod must have no requires and there must be no go.sum"
+            exit 1
+          fi
+
+      # Report only: -m never fails the build. Diff escape.txt between runs.
+      - name: escape analysis (report)
+        run: go build -gcflags='-m' ./... 2> escape.txt || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: escape-analysis
+          path: escape.txt
