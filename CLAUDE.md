@@ -59,6 +59,13 @@ Three binaries, strictly separated by what they touch:
   the chain fork-free). `"monitor": true` on one worker runs `monitorLoop` (SLO eval every
   30s, debounced status-change events + Discord) and, if `ledger_signing_key` is set, the
   `checkpointLoop` that signs all chains' heads.
+  **Restart reconciliation (KAN-254):** the monitor's state is in memory, so on the first
+  observation of each package it reads the package's last `status_change` row from `sla.events`
+  (`LastStatusMessages` + `seedConfirmed`) and continues from that status; a mismatch goes
+  through the normal debounce and writes an ordinary `from -> to` row (e.g. `degraded ->
+  operational` closing an episode that recovered while the worker was down). Same status = no
+  row, no alert. No `startup` rows are written any more (old ones still parse). With no rows
+  at all, a degraded/down package is treated as coming from `operational`.
   **`"adaptive_alert": true`** (default off; `internal/alertgate`) adds an *alert-only*
   per-package Discord threshold T for `operational <-> degraded` only: after the event is
   written, `fireTransition` asks the gate, which reads the package's `status_change` rows of

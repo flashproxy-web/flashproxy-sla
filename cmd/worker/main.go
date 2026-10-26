@@ -464,8 +464,9 @@ func commitProbeBatch(ch *chstore.Client, chain *ledger.Chain, vantage string, r
 
 // monitorLoop evaluates SLO status every 30s and records a status_change event +
 // Discord alert on a CONFIRMED transition (debounced to avoid flapping). It alerts
-// on the first observation too, so a worker that (re)starts into an already-degraded
-// state still pages. Enable on exactly one worker. Events are chained into the
+// after a restart too: the first observation is compared with the package's last
+// status_change in sla.events (seedConfirmed), so a restart neither duplicates an open
+// episode nor leaves a recovered one unclosed. Enable on exactly one worker. Events are chained into the
 // integrity ledger under stream="events".
 func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
 	eventsChain := resumeChain(ch, "events")
@@ -484,6 +485,7 @@ func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
 		n         int
 	}
 	states := map[string]*pkgState{}
+	var recorded map[string]string // package -> last status_change message, read once
 
 	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
@@ -503,11 +505,22 @@ func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
 		for _, p := range rows {
 			st := states[p.Package]
 			if st == nil {
-				states[p.Package] = &pkgState{confirmed: p.Status}
-				if p.Status != "operational" && p.Status != "no_data" {
-					fireTransition(ctx, ch, eventsChain, discord, cfg, p, "startup", gate)
+				// First sight of this package since start: continue from what
+				// sla.events says was last recorded, so an open episode is neither
+				// duplicated nor left unclosed (see seedConfirmed).
+				if recorded == nil {
+					rctx, rcancel := context.WithTimeout(ctx, 10*time.Second)
+					recorded, err = ch.LastStatusMessages(rctx)
+					rcancel()
+					if err != nil {
+						recorded = nil
+						log.Printf("monitor: read last events: %v", err)
+						break // retry next tick; never fall back to a blind first observation
+					}
 				}
-				continue
+				st = &pkgState{confirmed: seedConfirmed(recorded[p.Package], p.Status)}
+				states[p.Package] = st
+				// no continue: a mismatch is debounced like any other transition
 			}
 			if p.Status == st.confirmed {
 				st.cand, st.n = "", 0

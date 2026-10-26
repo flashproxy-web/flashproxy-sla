@@ -253,6 +253,22 @@ func (c *Client) StatusChangeMessages(ctx context.Context, pkg string, since tim
 	return out, nil
 }
 
+// LastStatusMessages returns, per package, the message of its newest status_change
+// event (monitor restart reconciliation; the writer role can SELECT).
+func (c *Client) LastStatusMessages(ctx context.Context) (map[string]string, error) {
+	rows, err := c.QueryJSON(ctx, fmt.Sprintf(
+		"SELECT package, argMax(message, (ts, seq)) AS message FROM %s.events WHERE type = 'status_change' GROUP BY package",
+		c.db))
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]string, len(rows))
+	for _, m := range rows {
+		out[Str(m, "package")] = Str(m, "message")
+	}
+	return out, nil
+}
+
 // QueryJSON runs a SELECT and returns the rows of the ClickHouse JSON format.
 // No client-set settings are sent: reader users are readonly=1, so query caps and
 // cancel_http_readonly_queries_on_client_close are configured server-side on the
