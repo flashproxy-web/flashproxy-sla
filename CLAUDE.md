@@ -59,6 +59,15 @@ Three binaries, strictly separated by what they touch:
   the chain fork-free). `"monitor": true` on one worker runs `monitorLoop` (SLO eval every
   30s, debounced status-change events + Discord) and, if `ledger_signing_key` is set, the
   `checkpointLoop` that signs all chains' heads.
+  **`"adaptive_alert": true`** (default off; `internal/alertgate`) adds an *alert-only*
+  per-package Discord threshold T for `operational <-> degraded` only: after the event is
+  written, `fireTransition` asks the gate, which reads the package's `status_change` rows of
+  the last 3 h from `sla.events` (parsing the frozen message `"<prev> -> degraded (response
+  Nms, X% ok)"`, `startup` rows excluded). With >= 5 issues, T rises to 5th-highest x 1.1 and
+  a one-line raise announcement (old→new, count, top readings) replaces the alert; below T alerts are suppressed, and while T > base every `degraded -> operational` recovery is suppressed too. A 3 h recheck from each change lowers T; while T > base a once-a-day summary
+  goes out per package (10:00; 16:00 instead if a raise/lower was already posted that day and the last one is >= 3 h old, else skipped; Asia/Jerusalem). The daily state resets when T returns to base. A transition to `down`/`no_data` also resets the package's adaptive state. Issue counting is deliberately broader than the gate: every `* -> degraded` row (except from `startup`) counts, but only `operational <-> degraded` is gated. If the event write fails (only logged), the lookup misses the current issue, so that one decision counts one short; this fails safe. State is in memory (restart = base, no startup post; the next degraded event with >= 5 issues still in the window raises T again and announces it);
+  a query error fails open. Events, ledger, website and SLA still use `slo.degraded_avg_ms`.
+  Tunables: `adaptive_alert_tuning` (see `config/worker.example.json`).
 - **`cmd/website`** — strictly **read-only** (reader role; never writes). Hardened
   `http.Server` (timeouts, panic recovery, security headers, TLS 1.2 min); server-renders
   `/`, `/sla`, and `/incidents` (downtime & degradation history) from Go `html/template`

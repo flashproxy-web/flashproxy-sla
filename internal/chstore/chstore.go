@@ -237,6 +237,22 @@ func (c *Client) LedgerHeads(ctx context.Context) (map[string]struct {
 	return out, nil
 }
 
+// StatusChangeMessages returns the messages of a package's status_change events
+// with ts >= since (adaptive alert gate input; the writer role can SELECT).
+func (c *Client) StatusChangeMessages(ctx context.Context, pkg string, since time.Time) ([]string, error) {
+	rows, err := c.QueryJSON(ctx, fmt.Sprintf(
+		"SELECT message FROM %s.events WHERE type = 'status_change' AND package = '%s' AND ts >= toDateTime(%d, 'UTC') ORDER BY ts",
+		c.db, escapeLit(pkg), since.UTC().Unix()))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, m := range rows {
+		out = append(out, Str(m, "message"))
+	}
+	return out, nil
+}
+
 // QueryJSON runs a SELECT and returns the rows of the ClickHouse JSON format.
 // No client-set settings are sent: reader users are readonly=1, so query caps and
 // cancel_http_readonly_queries_on_client_close are configured server-side on the

@@ -5,6 +5,13 @@
   "discord_webhook": "${DISCORD_WEBHOOK}",
   "checkpoint_every_sec": 300,
   "monitor_debounce_n": 2,
+  "//adaptive_alert": "Alert-only adaptive Discord threshold for operational<->degraded (KAN-247). false/absent = today's behaviour. Never changes events, ledger, website or SLA (still slo.degraded_avg_ms). Tuning is optional; values shown are the defaults.",
+  "adaptive_alert": false,
+  "adaptive_alert_tuning": {
+    "window_min": 180, "min_issues": 5, "top_n": 5,
+    "raise_factor": 1.1, "lower_ratio": 0.5, "recheck_min": 180,
+    "timezone": "Asia/Jerusalem", "daily_slots": ["10:00", "16:00"], "daily_gap_min": 180
+  },
   "ledger_signing_key": "${LEDGER_SIGNING_KEY}",
   "clickhouse": {
     "url": "http://127.0.0.1:18123",

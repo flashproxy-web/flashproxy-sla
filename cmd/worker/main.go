@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/flashproxy/flashproxy-status/internal/alertgate"
 	"github.com/flashproxy/flashproxy-status/internal/chstore"
 	"github.com/flashproxy/flashproxy-status/internal/ledger"
 	"github.com/flashproxy/flashproxy-status/internal/model"
@@ -92,6 +93,12 @@ type Config struct {
 	ScrapeHosts        []string    `json:"scrape_hosts"` // CONNECT targets for the scraping scenario
 	Scenarios          ScenarioCfg `json:"scenarios"`
 	Targets            []Target    `json:"targets"`
+
+	// AdaptiveAlert enables the alert-only adaptive Discord threshold for
+	// operational<->degraded (internal/alertgate). Absent/false = unchanged behaviour.
+	AdaptiveAlert       bool              `json:"adaptive_alert"`
+	AdaptiveAlertTuning alertgate.Options `json:"adaptive_alert_tuning"` // optional; zero values = defaults
+	adaptive            alertgate.Settings
 }
 
 // droppedProbes counts probes shed because the ship channel was full (ClickHouse
@@ -188,6 +195,13 @@ func loadConfig(p string) Config {
 		}
 	}
 	validateConfig(c)
+	if c.AdaptiveAlert {
+		s, err := c.AdaptiveAlertTuning.Build(c.SLO.DegradedAvgMs)
+		if err != nil {
+			log.Fatalf("config: adaptive_alert_tuning: %v", err)
+		}
+		c.adaptive = s
+	}
 	return c
 }
 
@@ -456,6 +470,13 @@ func commitProbeBatch(ch *chstore.Client, chain *ledger.Chain, vantage string, r
 func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
 	eventsChain := resumeChain(ch, "events")
 	discord := &http.Client{Timeout: 10 * time.Second}
+	var gate *alertgate.Gate
+	if cfg.AdaptiveAlert {
+		gate = alertgate.New(cfg.adaptive, func(ctx context.Context, pkg string, since time.Time) ([]string, error) {
+			return ch.StatusChangeMessages(ctx, pkg, since)
+		}, nil, log.Printf)
+		log.Printf("monitor: adaptive_alert ENABLED (base %.0fms, window %s, min issues %d)", cfg.adaptive.Base, cfg.adaptive.Window, cfg.adaptive.MinIssues)
+	}
 
 	type pkgState struct {
 		confirmed string
@@ -484,7 +505,7 @@ func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
 			if st == nil {
 				states[p.Package] = &pkgState{confirmed: p.Status}
 				if p.Status != "operational" && p.Status != "no_data" {
-					fireTransition(ctx, ch, eventsChain, discord, cfg, p, "startup")
+					fireTransition(ctx, ch, eventsChain, discord, cfg, p, "startup", gate)
 				}
 				continue
 			}
@@ -500,23 +521,44 @@ func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
 			if st.n >= cfg.MonitorDebounceN {
 				prev := st.confirmed
 				st.confirmed, st.cand, st.n = p.Status, "", 0
-				fireTransition(ctx, ch, eventsChain, discord, cfg, p, prev)
+				fireTransition(ctx, ch, eventsChain, discord, cfg, p, prev, gate)
 			}
+		}
+		if gate != nil {
+			gctx, gcancel := context.WithTimeout(ctx, 10*time.Second)
+			for _, post := range gate.Tick(gctx) {
+				if cfg.Discord != "" {
+					postDiscord(discord, cfg.Discord, post.Text)
+				}
+			}
+			gcancel()
 		}
 	}
 }
 
-// fireTransition records a status_change event (chained) and posts to Discord.
-func fireTransition(ctx context.Context, ch *chstore.Client, eventsChain *ledger.Chain, discord *http.Client, cfg Config, p slo.Status, prev string) {
+// fireTransition records a status_change event (chained) and posts to Discord. A
+// non-nil gate (adaptive_alert) may suppress or replace the Discord post for
+// operational<->degraded only; the event write is unchanged.
+func fireTransition(ctx context.Context, ch *chstore.Client, eventsChain *ledger.Chain, discord *http.Client, cfg Config, p slo.Status, prev string, gate *alertgate.Gate) {
 	log.Printf("status change %s: %s -> %s (response %.0fms)", p.Package, prev, p.Status, p.ResponseMsAvg)
-	msg := fmt.Sprintf("%s -> %s (response %.0fms, %.1f%% ok)", prev, p.Status, p.ResponseMsAvg, p.SuccessPct)
+	msg := fmt.Sprintf(alertgate.MessageFormat, prev, p.Status, p.ResponseMsAvg, p.SuccessPct)
 	ev := model.Event{TS: time.Now().UTC(), Type: "status_change", Package: p.Package, Message: msg}
 	if err := commitEvent(ctx, ch, eventsChain, ev); err != nil {
 		log.Printf("monitor: record event: %v", err)
 	}
-	if cfg.Discord != "" {
+	send, extra := true, ""
+	if gate != nil {
+		gctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		send, extra = gate.Transition(gctx, p.Package, prev, p.Status, p.ResponseMsAvg)
+		cancel()
+	}
+	if cfg.Discord != "" && send {
 		emoji := map[string]string{"operational": "✅", "degraded": "⚠️", "down": "🔴", "no_data": "⚪"}[p.Status]
-		postDiscord(discord, cfg.Discord, fmt.Sprintf("%s **%s**: `%s` → `%s` (response %.0fms)", emoji, p.Package, prev, p.Status, p.ResponseMsAvg))
+		text := fmt.Sprintf("%s **%s**: `%s` → `%s` (response %.0fms)", emoji, p.Package, prev, p.Status, p.ResponseMsAvg)
+		if extra != "" {
+			text = extra // raise announcement replaces the plain alert (it carries the top readings)
+		}
+		postDiscord(discord, cfg.Discord, text)
 	}
 }
 
