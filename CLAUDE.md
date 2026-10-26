@@ -73,15 +73,20 @@ Three binaries, strictly separated by what they touch:
 - **`cmd/origin`** — deterministic upstream (`/connect`, `/bytes/{n}`, `/small`, `/hold`) so
   payload metrics are pure SLA signal with no third-party variance. Bind dual-stack (`:8080`
   serves v4+v6) so IPv6 packages exercise v6 egress. The headline `connect` probe is
-  **best-of-N** (`probe.ConnectBest`): each cycle it probes a *set* of endpoints — our
-  co-located origin PLUS a few anycast connectivity-check endpoints (`detectportal.firefox.com`,
-  `www.gstatic.com`, `one.one.one.one`) — and records only the BEST (lowest `ttfb` among
-  successes; Down only if EVERY target fails). This isolates the proxy from target-side noise.
-  Our origin stays in the set as the availability floor, so there's no *hard* external
-  dependency. The payload scenarios (throughput etc.) still use only our origin.
-  The set is per-target config `connect_targets: [{target, path}]` (`path: ""` ⇒ the tunnel
-  itself is the signal, no GET); the singular `connect_target`/`origin_get` is the **legacy
-  single-target fallback**, still honored. Whichever origin a package points at should be the
+  **best-of-N** (`probe.ConnectBest`) over a **provider-diverse pool** (~10 connectivity-check
+  endpoints across 8 providers — mozilla/google/microsoft/apple/cloudflare/ubuntu/debian/gnome).
+  Each cycle it **stratifies**: the `origin`-group (or ungrouped) endpoints are ALWAYS probed
+  (availability floor, so no *hard* external dependency and no all-blocked draw), plus one random
+  endpoint from each of `GroupsPerCycle`=5 random provider groups. It records the BEST as
+  scenario `connect` (lowest `ttfb` among successes; Down only if EVERY sampled target fails) —
+  this isolates the proxy from target-side noise — and also emits every sampled target as a
+  diagnostic `connect_probe` row. **The SLO reads only `connect`**, so `connect_probe` never
+  changes a verdict. Any 2xx counts as success (the `generate_204` endpoints; a 200-only check
+  once silently failed gstatic). The payload scenarios (throughput etc.) use only our origin.
+  The pool is per-target config `connect_targets: [{target, path, group}]` (`path: ""` ⇒ the
+  tunnel itself is the signal, no GET); the singular `connect_target`/`origin_get` is the
+  **legacy single-target fallback**, still honored. `docs/` holds forward-looking plans (e.g.
+  multi-provider payload origins) — not current behavior. Whichever origin a package points at should be the
   one **co-located with that package's PROXY**, not the vantage's own origin — response time
   then isolates the proxy hop (vantage→proxy + proxy→co-located origin ≈ vantage→proxy).
 - **`cmd/verify`** — standalone public auditor: recomputes every batch/entry hash and checks
