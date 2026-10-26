@@ -202,7 +202,7 @@ func validateConfig(c Config) {
 		log.Fatalf("config: clickhouse url/db/user/password must all be set (check for unset ${ENV} placeholders)")
 	}
 	if len(c.Targets) == 0 {
-		log.Fatalf("config: no targets")
+		log.Printf("config: no targets")
 	}
 	for _, t := range c.Targets {
 		if t.Package == "" {
