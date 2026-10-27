@@ -57,7 +57,12 @@ Three binaries, strictly separated by what they touch:
   computed once, then rows and ledger entry are inserted (in that order) and only then is the
   chain advanced. A failed sealed batch is **retried byte-identical** (an insert step that was
   already acked is not re-sent) until it commits; probes arriving meanwhile wait in a buffer
-  for the next seq (sealed in chunks of <= 10000 rows). **Never rebuild or grow a batch at a
+  for the next seq (sealed in chunks of <= 10000 rows). Flushes run in their own goroutine
+  (`flushAsync`), so a slow insert does not stop intake: `flushMu` (TryLock) allows one flush in
+  flight and owns the sealed batch (a trigger that finds it taken does nothing); `mu` guards
+  only the unsealed buffer. Code that runs outside the flush goroutine must not read `sealed`
+  (use `sealedSeqN`); the shutdown drain (`flushUntil`) takes `flushMu`. Run worker tests with
+  `-race`. **Never rebuild or grow a batch at a
   seq that was already sent (KAN-260):** ClickHouse drops a re-insert with a seen token and
   acks it OK even if the content differs, so a client timeout after the server stored attempt
   1 used to leave row_count/batch_hash mismatches and chain breaks. The unsealed buffer is
