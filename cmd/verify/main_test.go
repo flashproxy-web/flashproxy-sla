@@ -184,12 +184,16 @@ func (f *fakeSource) rowPage(_ context.Context, stream string, from, head uint64
 
 func (f *fakeSource) checkpoints(context.Context) ([]ledger.Checkpoint, error) { return f.cps, nil }
 
+// fixtureBase is taken once per process: fixtures built at different moments of one
+// test run (e.g. per chunk size) must be byte-identical, or their chain hashes differ.
+var fixtureBase = time.Now().Add(-time.Hour).Truncate(time.Second).UTC()
+
 // fixture builds one probe stream "s1" with the given batch sizes (seq 1..n), its
 // ledger, and a signed checkpoint at the head. Timestamps are recent, so missing
 // rows count as missing (not TTL-expired).
 func fixture(t *testing.T, priv ed25519.PrivateKey, sizes ...int) *fakeSource {
 	t.Helper()
-	base := time.Now().Add(-time.Hour).Truncate(time.Second).UTC()
+	base := fixtureBase
 	c := ledger.NewChain("s1")
 	f := &fakeSource{entries: map[string][]ledger.Entry{}, rows: map[string][]seqRow{}}
 	for b, n := range sizes {
