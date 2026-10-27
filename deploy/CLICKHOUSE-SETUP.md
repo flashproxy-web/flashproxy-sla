@@ -365,6 +365,7 @@ exist for upgrading a database created by an older version:
 |---|---|---|
 | `001-add-integrity-ledger.sql` | ledger tables, `stream`/`seq`, UTC/TTL | Additive, online |
 | `002-add-incident-statements.sql` | `sla.incident_statements` + narrow writer | Additive, online |
+| `003-events-dedup-window.sql` | insert dedup window on `sla.events` | Setting only, online; run before deploying the sealed-batch worker |
 
 **Always migrate before deploying new binaries.** A current worker reads `sla.ledger` and
 writes `stream`/`seq` at startup, so it crash-loops against an un-migrated schema. Old

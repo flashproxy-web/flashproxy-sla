@@ -65,8 +65,9 @@ Three binaries, strictly separated by what they touch:
   `PENDING BUFFER FULL` log line). It **drains on SIGTERM** (sealed batch first, then the
   buffer, 8 attempts) so deploys/outages don't lose data. Status-change events use the same
   rule (`eventLog`: a failed event keeps its seq and is retried each monitor tick before any
-  newer event); note `sla.events` has no dedup window, so a timed-out-but-stored event insert
-  is stored twice on retry until that table gets `non_replicated_deduplication_window`. **Exactly one worker per vantage** (vantage = ledger stream key → single-writer keeps
+  newer event); the event insert's dedup token (`events:<seq>`) only works once `sla.events`
+  has `non_replicated_deduplication_window` (migration `003`; without it a timed-out-but-stored
+  event insert is stored twice on retry). **Exactly one worker per vantage** (vantage = ledger stream key → single-writer keeps
   the chain fork-free). `"monitor": true` on one worker runs `monitorLoop` (SLO eval every
   30s, debounced status-change events + Discord) and, if `ledger_signing_key` is set, the
   `checkpointLoop` that signs all chains' heads.
@@ -163,8 +164,8 @@ Shared `internal/` packages:
 
 `schema/clickhouse.sql` creates `sla.probe_raw` + `sla.events` (both UTC, **400-day TTL**,
 carrying `stream`/`seq`), the append-only **`sla.ledger`** + **`sla.ledger_checkpoints`**, and
-the `probe_1m` rollup. probe_raw/ledger set `non_replicated_deduplication_window` so retried
-inserts are idempotent. `schema/roles.sql` creates `sla_reader` (SELECT) and `sla_writer`
+the `probe_1m` rollup. probe_raw/ledger/events set `non_replicated_deduplication_window` so retried
+inserts are idempotent (events: migration `003`). `schema/roles.sql` creates `sla_reader` (SELECT) and `sla_writer`
 (SELECT+INSERT); the **public** user is published (resource-capped on every axis) so anyone
 can reproduce the page, the **website** user renders, the **worker**
 user writes. The read/write split is the mechanism that makes the data trustworthy — keep it.

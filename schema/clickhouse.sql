@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS sla.events
 )
 ENGINE = MergeTree
 ORDER BY ts
-TTL ts + INTERVAL 400 DAY;
+TTL ts + INTERVAL 400 DAY
+SETTINGS non_replicated_deduplication_window = 1000;
 
 -- ===========================================================================
 -- Operator-authored incident statements (editorial — NOT a measurement).
