@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -267,6 +268,30 @@ func redactURL(s string) string {
 		return u.Redacted()
 	}
 	return "***"
+}
+
+// redactWebhook masks Discord webhook id/token in s (net/http errors embed the full
+// request URL, e.g. `Post "https://discord.com/api/webhooks/<id>/<token>": ...`). Any
+// host works (discord.com, discordapp.com, ptb./canary.); everything after
+// "/api/webhooks/" up to the next quote, whitespace or end of string is replaced.
+func redactWebhook(s string) string {
+	const marker = "/api/webhooks/"
+	var b strings.Builder
+	for {
+		i := strings.Index(s, marker)
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		b.WriteString(s[:i+len(marker)])
+		b.WriteString("<redacted>")
+		s = s[i+len(marker):]
+		if j := strings.IndexAny(s, "\"'` \t\r\n"); j >= 0 {
+			s = s[j:]
+		} else {
+			s = ""
+		}
+	}
 }
 
 func runTarget(ctx context.Context, cfg Config, t Target, out chan<- model.ProbeResult) {
@@ -649,13 +674,13 @@ func postDiscord(client *http.Client, webhook, content string) {
 	for attempt := 1; attempt <= 3; attempt++ {
 		req, err := http.NewRequest(http.MethodPost, webhook, bytes.NewReader(body))
 		if err != nil {
-			log.Printf("discord: build request: %v", err)
+			log.Printf("discord: build request: %s", redactWebhook(err.Error()))
 			return
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := client.Do(req)
 		if err != nil {
-			log.Printf("discord: attempt %d: %v", attempt, err)
+			log.Printf("discord: attempt %d: %s", attempt, redactWebhook(err.Error()))
 			time.Sleep(time.Duration(attempt) * time.Second)
 			continue
 		}
