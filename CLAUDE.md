@@ -107,7 +107,12 @@ Three binaries, strictly separated by what they touch:
   one **co-located with that package's PROXY**, not the vantage's own origin — response time
   then isolates the proxy hop (vantage→proxy + proxy→co-located origin ≈ vantage→proxy).
 - **`cmd/verify`** — standalone public auditor: recomputes every batch/entry hash and checks
-  every checkpoint signature using only public read access. **`cmd/keygen`** mints the keypair.
+  every checkpoint signature using only public read access. It reads in pages of whole
+  batches (`-chunk-rows`, default 200000; `ORDER BY seq LIMIT n WITH TIES`, so a page never
+  splits a batch), because the public profile's `max_result_rows` = 1M is below one stream's
+  `probe_raw` size; don't raise that cap, keep paging. Each stream's ledger is read first and
+  fixes the head; rows are read only up to it, so batches written during a run are skipped,
+  not failed. Any read error or inconsistent page fails the run. **`cmd/keygen`** mints the keypair.
 
 Shared `internal/` packages:
 

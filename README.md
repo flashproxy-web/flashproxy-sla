@@ -107,8 +107,10 @@ go run ./cmd/verify -ch https://ch.flashproxy.com \
 ```
 
 It walks every per-vantage chain, recomputes each batch hash from the raw rows, and
-checks every checkpoint signature, reporting any break, gap, or bad signature. This is
-**tamper-evidence**, not a claim that the measurements are honest at generation time —
+checks every checkpoint signature, reporting any break, gap, or bad signature. It reads
+in seq-ordered pages of whole batches (`-chunk-rows`, default 200000), because the public
+user caps one query result at 1M rows and a stream holds more than that; the chunk size
+never changes the verdict. This is **tamper-evidence**, not a claim that the measurements are honest at generation time —
 that rests on the open-source code, multiple independent vantages, and live publication.
 (Checkpoints are signed and stored in the public DB; an external anchor — OpenTimestamps
 / a transparency log — can be added with no schema change to also defeat key-holder
