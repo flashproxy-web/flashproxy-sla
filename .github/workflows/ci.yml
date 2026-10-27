@@ -17,9 +17,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           cache: false # no go.sum (stdlib only), so nothing to cache
@@ -49,7 +51,7 @@ jobs:
       - name: escape analysis (report)
         run: go build -gcflags='-m' ./... 2> escape.txt || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: escape-analysis
           path: escape.txt
