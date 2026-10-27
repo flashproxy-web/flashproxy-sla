@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -70,8 +71,11 @@ func (s *sealedBatch) send(ctx context.Context, insertLedger func(context.Contex
 }
 
 // batcher holds the flusher's state: at most one sealed batch in flight plus the
-// unsealed buffer that becomes the next batch(es) once it commits. Not concurrent-safe
-// (the flusher goroutine owns it).
+// unsealed buffer that becomes the next batch(es) once it commits.
+//
+// Two locks: flushMu is the "flush in progress" lock (TryLock: a trigger that finds it
+// taken does nothing, the running flush already covers the data; sealed is owned by
+// its holder). mu only guards buf, so intake never waits on a network call.
 type batcher struct {
 	store      probeStore
 	chain      *ledger.Chain
@@ -80,8 +84,14 @@ type batcher struct {
 	timeout    time.Duration
 	sleep      func(time.Duration)
 
-	sealed *sealedBatch
-	buf    []model.ProbeResult
+	flushMu sync.Mutex
+	sealed  *sealedBatch
+	// sealedSeqN mirrors sealed.seq (0 = none) so add, which runs on the flusher
+	// goroutine while a flush goroutine owns sealed, can log it without a data race.
+	sealedSeqN atomic.Uint64
+
+	mu  sync.Mutex
+	buf []model.ProbeResult
 }
 
 func newBatcher(store probeStore, chain *ledger.Chain, vantage string, maxPending int) *batcher {
@@ -95,15 +105,24 @@ func newBatcher(store probeStore, chain *ledger.Chain, vantage string, maxPendin
 
 // add buffers one probe. Over the cap it drops the OLDEST unsealed rows (never the
 // sealed batch) and says so loudly.
-func (b *batcher) add(r model.ProbeResult) {
+func (b *batcher) add(r model.ProbeResult) (buffered int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.buf = append(b.buf, r)
 	if over := len(b.buf) - b.maxPending; over > 0 {
 		b.buf = b.buf[over:]
 		n := overflowProbes.Add(uint64(over))
 		if n == uint64(over) || n%10000 < uint64(over) {
-			log.Printf("PENDING BUFFER FULL: dropped %d oldest unsealed probe(s) (cap %d, %d dropped since start; sealed seq %d still not committed)", over, b.maxPending, n, b.sealedSeq())
+			log.Printf("PENDING BUFFER FULL: dropped %d oldest unsealed probe(s) (cap %d, %d dropped since start; sealed seq %d still not committed)", over, b.maxPending, n, b.sealedSeqN.Load())
 		}
 	}
+	return len(b.buf)
+}
+
+func (b *batcher) buffered() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.buf)
 }
 
 func (b *batcher) sealedSeq() uint64 {
@@ -115,7 +134,7 @@ func (b *batcher) sealedSeq() uint64 {
 
 // pending is the number of rows not yet committed (sealed + unsealed).
 func (b *batcher) pending() int {
-	n := len(b.buf)
+	n := b.buffered()
 	if b.sealed != nil {
 		n += b.sealed.rows
 	}
@@ -126,10 +145,16 @@ func (b *batcher) pending() int {
 // Rows, canonical form, ts bounds and the entry are computed exactly as before; only
 // now they are computed ONCE.
 func (b *batcher) seal() {
+	b.mu.Lock()
 	n := min(len(b.buf), maxSealRows)
 	rows := make([]model.ProbeResult, n)
 	copy(rows, b.buf[:n])
-	b.buf = b.buf[n:]
+	if n == len(b.buf) {
+		b.buf = b.buf[:0] // common case: keep the capacity instead of walking the slice forward and reallocating
+	} else {
+		b.buf = b.buf[n:] // backlog split: no O(n) shift per seal
+	}
+	b.mu.Unlock()
 
 	hseq, _ := b.chain.Head()
 	seq := hseq + 1
@@ -158,6 +183,7 @@ func (b *batcher) seal() {
 		},
 		ledgerToken: fmt.Sprintf("%s:%d:ledger", b.vantage, seq),
 	}
+	b.sealedSeqN.Store(seq)
 }
 
 // commitSealed makes one attempt at the sealed batch. Insert order is rows then
@@ -176,13 +202,14 @@ func (b *batcher) commitSealed() error {
 		log.Printf("flushed %d probes (seq %d committed)", s.rows, s.seq)
 	}
 	b.sealed = nil
+	b.sealedSeqN.Store(0)
 	return nil
 }
 
 // flush retries the sealed batch (if any), then seals and commits the buffer, until
 // everything is committed or an attempt fails. A failed sealed batch is kept as-is.
 func (b *batcher) flush() error {
-	for b.sealed != nil || len(b.buf) > 0 {
+	for b.sealed != nil || b.buffered() > 0 {
 		if b.sealed == nil {
 			b.seal()
 		}
@@ -193,17 +220,42 @@ func (b *batcher) flush() error {
 	return nil
 }
 
-// flushOnce is one flush pass for the size/tick triggers; on failure the sealed batch
-// is retained unchanged for the next pass.
+// flushOnce is one flush pass for the size/tick triggers. If another flush holds
+// flushMu it returns at once (that flush already covers the data). On failure the
+// sealed batch is retained unchanged for the next trigger, with no backoff: every
+// trigger retries as soon as the previous attempt is over.
 func (b *batcher) flushOnce() {
+	if !b.flushMu.TryLock() {
+		return
+	}
+	defer b.flushMu.Unlock()
+	b.flushLocked()
+}
+
+// flushAsync is flushOnce in its own goroutine, so the flusher keeps reading probes
+// while a slow insert runs. The lock is taken before the goroutine starts, so at
+// most one flush is ever in flight.
+func (b *batcher) flushAsync() {
+	if !b.flushMu.TryLock() {
+		return
+	}
+	go func() {
+		defer b.flushMu.Unlock()
+		b.flushLocked()
+	}()
+}
+
+func (b *batcher) flushLocked() {
 	if err := b.flush(); err != nil {
-		log.Printf("flush seq %d (%d rows sealed, %d pending): %v (retained, will retry)", b.sealedSeq(), b.sealed.rows, len(b.buf), err)
+		log.Printf("flush seq %d (%d rows sealed, %d pending): %v (retained, will retry)", b.sealedSeq(), b.sealed.rows, b.buffered(), err)
 	}
 }
 
 // flushUntil is the shutdown drain: it retries the sealed batch and then the rest of
 // the buffer up to attempts times before giving up (and logging the loss).
 func (b *batcher) flushUntil(attempts int) {
+	b.flushMu.Lock() // waits for an in-flight flush (<= flushTimeout)
+	defer b.flushMu.Unlock()
 	for i := 0; i < attempts && b.pending() > 0; i++ {
 		err := b.flush()
 		if err == nil {
@@ -235,12 +287,11 @@ func flusher(store probeStore, chain *ledger.Chain, vantage string, maxPending i
 				b.flushUntil(8) // final drain: try hard
 				return
 			}
-			b.add(r)
-			if len(b.buf) >= flushRows {
-				b.flushOnce()
+			if b.add(r) >= flushRows {
+				b.flushAsync()
 			}
 		case <-t.C:
-			b.flushOnce()
+			b.flushAsync()
 		}
 	}
 }

@@ -397,3 +397,46 @@ func TestEventLogSealed(t *testing.T) {
 		t.Fatalf("entries %d", n)
 	}
 }
+
+func TestFlushLockSkipsWhileBusy(t *testing.T) {
+	s := newFakeStore()
+	b := newBatcher(s, ledger.NewChain("v1"), "v1", 0)
+	b.add(model.ProbeResult{TS: time.Unix(1, 0)})
+	b.flushMu.Lock() // a flush is "running"
+	b.flushOnce()
+	b.flushAsync()
+	if seqOf(b.chain) != 0 || b.buffered() != 1 {
+		t.Fatalf("flush ran while lock held: seq %d buf %d", seqOf(b.chain), b.buffered())
+	}
+	b.flushMu.Unlock()
+	b.flushOnce()
+	if seqOf(b.chain) != 1 || b.buffered() != 0 {
+		t.Fatalf("not flushed after unlock: seq %d buf %d", seqOf(b.chain), b.buffered())
+	}
+}
+
+func TestSealReusesBufferCapacity(t *testing.T) {
+	b := testBatcher(newFakeStore(), 0)
+	addAll(b, probes(0, 5))
+	before := cap(b.buf)
+	b.seal()
+	if len(b.buf) != 0 || cap(b.buf) != before {
+		t.Fatalf("len %d cap %d, want 0 and %d", len(b.buf), cap(b.buf), before)
+	}
+}
+
+// Run with -race: add() hitting the pending cap logs the sealed seq while a flush
+// goroutine seals and commits; it must not read the sealed batch itself.
+func TestAddOverflowDuringConcurrentFlush(t *testing.T) {
+	b := newBatcher(newFakeStore(), ledger.NewChain("v1"), "v1", 2)
+	b.sleep = func(time.Duration) {}
+	for i := 0; i < 3000; i++ {
+		b.add(model.ProbeResult{TS: time.Unix(int64(i), 0)})
+		b.flushAsync()
+		b.add(model.ProbeResult{TS: time.Unix(int64(i), 1)}) // may overflow (cap 2) mid-flush
+		b.add(model.ProbeResult{TS: time.Unix(int64(i), 2)})
+		b.add(model.ProbeResult{TS: time.Unix(int64(i), 3)})
+	}
+	b.flushMu.Lock() // wait for the last flush goroutine
+	b.flushMu.Unlock()
+}
