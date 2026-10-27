@@ -52,10 +52,21 @@ Three binaries, strictly separated by what they touch:
   `_direct` baseline), writes rows as the **writer** role, and appends one **integrity-ledger
   entry per flush batch**. Each scenario runs in its own ctx-aware goroutine (`runTarget`);
   `emit` is **non-blocking** (sheds + counts probes if the channel is full, so cadence stays
-  accurate during a store outage). The `flusher` tags rows with `(vantage, seq)`, inserts
-  rows then the ledger entry (dedup-token-idempotent), and only then advances the chain;
-  it **retains the batch on error** and **drains on SIGTERM** so deploys/outages don't lose
-  data. **Exactly one worker per vantage** (vantage = ledger stream key → single-writer keeps
+  accurate during a store outage). The `flusher` (`cmd/worker/flush.go`) **seals** a batch
+  when its flush starts (size 200 or 3s tick): seq, rows, ledger entry and dedup tokens are
+  computed once, then rows and ledger entry are inserted (in that order) and only then is the
+  chain advanced. A failed sealed batch is **retried byte-identical** (an insert step that was
+  already acked is not re-sent) until it commits; probes arriving meanwhile wait in a buffer
+  for the next seq (sealed in chunks of <= 10000 rows). **Never rebuild or grow a batch at a
+  seq that was already sent (KAN-260):** ClickHouse drops a re-insert with a seen token and
+  acks it OK even if the content differs, so a client timeout after the server stored attempt
+  1 used to leave row_count/batch_hash mismatches and chain breaks. The unsealed buffer is
+  capped (`max_pending_rows`, default 300000; oldest unsealed rows dropped with a
+  `PENDING BUFFER FULL` log line). It **drains on SIGTERM** (sealed batch first, then the
+  buffer, 8 attempts) so deploys/outages don't lose data. Status-change events use the same
+  rule (`eventLog`: a failed event keeps its seq and is retried each monitor tick before any
+  newer event); note `sla.events` has no dedup window, so a timed-out-but-stored event insert
+  is stored twice on retry until that table gets `non_replicated_deduplication_window`. **Exactly one worker per vantage** (vantage = ledger stream key → single-writer keeps
   the chain fork-free). `"monitor": true` on one worker runs `monitorLoop` (SLO eval every
   30s, debounced status-change events + Discord) and, if `ledger_signing_key` is set, the
   `checkpointLoop` that signs all chains' heads.
@@ -285,8 +296,8 @@ and website users read statements with no grant change.
   `Code: 243 … NOT_ENOUGH_SPACE`. Probe data was only ~2 months old (nowhere near the 400-day
   TTL) — the space went to un-TTL'd ClickHouse **log tables**, which grow with query volume,
   not data volume. Fixes live in `deploy/CLICKHOUSE-SETUP.md` §4.4. Two things to know when
-  it happens: the workers **self-heal** once space is freed (they retain the batch and retry
-  ~2×/s — restarting them *discards* that buffer), and the built-in monitor **cannot alert**,
+  it happens: the workers **self-heal** once space is freed (they retain the sealed batch and retry
+  it on every flush trigger — restarting them *discards* the sealed batch and the buffer), and the built-in monitor **cannot alert**,
   because it writes its events to the same full database. Disk alerting must live outside
   this stack.
 - **Truncating / resetting data:** STOP the workers → `TRUNCATE` → START the workers. The chain

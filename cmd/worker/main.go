@@ -87,6 +87,7 @@ type Config struct {
 	LedgerSigningKey   string      `json:"ledger_signing_key"`   // Ed25519 seed/key (base64 or hex); enables checkpoint signing
 	CheckpointEverySec int         `json:"checkpoint_every_sec"` // checkpoint cadence (default 300)
 	MonitorDebounceN   int         `json:"monitor_debounce_n"`   // consecutive evals before a status change is confirmed (default 2)
+	MaxPendingRows     int         `json:"max_pending_rows"`     // unsealed probe rows kept while a batch can't commit; oldest dropped beyond (default 300000)
 	ClickHouse         chConn      `json:"clickhouse"`
 	SLO                slo.SLO     `json:"slo"`
 	Origin             string      `json:"origin"`       // host:port of a self-hosted origin (IPv4 path) for payload scenarios
@@ -139,7 +140,7 @@ func main() {
 	}
 
 	flusherDone := make(chan struct{})
-	go func() { defer close(flusherDone); flusher(ch, chain, cfg.Vantage, results) }()
+	go func() { defer close(flusherDone); flusher(ch, chain, cfg.Vantage, cfg.MaxPendingRows, results) }()
 
 	if cfg.Monitor {
 		go monitorLoop(ctx, cfg, ch)
@@ -392,101 +393,6 @@ func loopCtx(ctx context.Context, intervalMs int, fn func()) {
 	}
 }
 
-// flusher batches probe rows, then for each batch: tags rows with (vantage, seq),
-// inserts them, appends ONE signed-later ledger entry committing to their hashes,
-// and only then advances the chain. On any error it RETAINS the batch and retries
-// (inserts are de-duplicated by token, so retries are safe). When the input channel
-// closes (shutdown) it drains and does a final, persistent flush so no data is lost.
-func flusher(ch *chstore.Client, chain *ledger.Chain, vantage string, in <-chan model.ProbeResult) {
-	buf := make([]model.ProbeResult, 0, 256)
-	t := time.NewTicker(3 * time.Second)
-	defer t.Stop()
-
-	for {
-		select {
-		case r, ok := <-in:
-			if !ok {
-				flushUntil(ch, chain, vantage, &buf, 8) // final drain: try hard
-				return
-			}
-			buf = append(buf, r)
-			if len(buf) >= 200 {
-				flushOnce(ch, chain, vantage, &buf)
-			}
-		case <-t.C:
-			flushOnce(ch, chain, vantage, &buf)
-		}
-	}
-}
-
-// flushOnce attempts a single flush; on failure it keeps the buffer for next time.
-func flushOnce(ch *chstore.Client, chain *ledger.Chain, vantage string, buf *[]model.ProbeResult) {
-	if len(*buf) == 0 {
-		return
-	}
-	if err := commitProbeBatch(ch, chain, vantage, *buf); err != nil {
-		log.Printf("flush %d rows: %v (retained, will retry)", len(*buf), err)
-		return
-	}
-	log.Printf("flushed %d probes (seq %d committed)", len(*buf), seqOf(chain))
-	*buf = (*buf)[:0]
-}
-
-// flushUntil retries the final flush up to attempts times before giving up (and
-// logging the loss). Used on shutdown.
-func flushUntil(ch *chstore.Client, chain *ledger.Chain, vantage string, buf *[]model.ProbeResult, attempts int) {
-	for i := 0; i < attempts && len(*buf) > 0; i++ {
-		if err := commitProbeBatch(ch, chain, vantage, *buf); err != nil {
-			log.Printf("final flush attempt %d/%d for %d rows: %v", i+1, attempts, len(*buf), err)
-			time.Sleep(time.Duration(i+1) * time.Second)
-			continue
-		}
-		log.Printf("final flush: %d probes committed (seq %d)", len(*buf), seqOf(chain))
-		*buf = (*buf)[:0]
-		return
-	}
-	if len(*buf) > 0 {
-		log.Printf("DATA LOSS: gave up flushing %d probes after %d attempts", len(*buf), attempts)
-	}
-}
-
-func seqOf(chain *ledger.Chain) uint64 { s, _ := chain.Head(); return s }
-
-// commitProbeBatch tags rows with the next seq, inserts them, appends the ledger
-// entry, then advances the chain. Insert order is rows-then-ledger with dedup tokens
-// so a retry never duplicates and a crash between the two surfaces as a verifiable
-// gap (rows without an entry), never as silent corruption.
-func commitProbeBatch(ch *chstore.Client, chain *ledger.Chain, vantage string, rows []model.ProbeResult) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	hseq, _ := chain.Head()
-	seq := hseq + 1
-	canon := make([]string, len(rows))
-	var tsFirst, tsLast int64
-	for i := range rows {
-		rows[i].Stream = vantage
-		rows[i].Seq = seq
-		canon[i] = rows[i].Canonical()
-		ts := rows[i].TS.UTC().Unix()
-		if i == 0 || ts < tsFirst {
-			tsFirst = ts
-		}
-		if ts > tsLast {
-			tsLast = ts
-		}
-	}
-	e := chain.Build(ledger.KindProbe, canon, tsFirst, tsLast)
-	if err := ch.InsertProbes(ctx, rows, fmt.Sprintf("%s:%d", vantage, seq)); err != nil {
-		return fmt.Errorf("insert probes: %w", err)
-	}
-	if err := ch.InsertLedger(ctx, e, fmt.Sprintf("%s:%d:ledger", vantage, seq)); err != nil {
-		return fmt.Errorf("insert ledger entry: %w", err)
-	}
-	chain.Commit(e)
-	return nil
-}
-
 // monitorLoop evaluates SLO status every 30s and records a status_change event +
 // Discord alert on a CONFIRMED transition (debounced to avoid flapping). It alerts
 // after a restart too: the first observation is compared with the package's last
@@ -494,7 +400,7 @@ func commitProbeBatch(ch *chstore.Client, chain *ledger.Chain, vantage string, r
 // episode nor leaves a recovered one unclosed. Enable on exactly one worker. Events are chained into the
 // integrity ledger under stream="events".
 func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
-	eventsChain := resumeChain(ch, "events")
+	events := &eventLog{store: ch, chain: resumeChain(ch, "events")}
 	discord := &http.Client{Timeout: 10 * time.Second}
 	var gate *alertgate.Gate
 	if cfg.AdaptiveAlert {
@@ -519,6 +425,12 @@ func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		if events.sealed != nil {
+			// an event that failed to commit is retried every tick, unchanged
+			if err := events.flush(ctx); err != nil {
+				log.Printf("monitor: record event (retry): %v", err)
+			}
 		}
 		qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		rows, err := slo.Fetch(qctx, ch, cfg.ClickHouse.DB, cfg.SLO)
@@ -559,7 +471,7 @@ func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
 			if st.n >= cfg.MonitorDebounceN {
 				prev := st.confirmed
 				st.confirmed, st.cand, st.n = p.Status, "", 0
-				fireTransition(ctx, ch, eventsChain, discord, cfg, p, prev, gate)
+				fireTransition(ctx, events, discord, cfg, p, prev, gate)
 			}
 		}
 		if gate != nil {
@@ -576,13 +488,14 @@ func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
 
 // fireTransition records a status_change event (chained) and posts to Discord. A
 // non-nil gate (adaptive_alert) may suppress or replace the Discord post for
-// operational<->degraded only; the event write is unchanged.
-func fireTransition(ctx context.Context, ch *chstore.Client, eventsChain *ledger.Chain, discord *http.Client, cfg Config, p slo.Status, prev string, gate *alertgate.Gate) {
+// operational<->degraded only; the event write is unchanged. A failed event write is
+// kept sealed in events and retried (see eventLog).
+func fireTransition(ctx context.Context, events *eventLog, discord *http.Client, cfg Config, p slo.Status, prev string, gate *alertgate.Gate) {
 	log.Printf("status change %s: %s -> %s (response %.0fms)", p.Package, prev, p.Status, p.ResponseMsAvg)
 	msg := fmt.Sprintf(alertgate.MessageFormat, prev, p.Status, p.ResponseMsAvg, p.SuccessPct)
 	ev := model.Event{TS: time.Now().UTC(), Type: "status_change", Package: p.Package, Message: msg}
-	if err := commitEvent(ctx, ch, eventsChain, ev); err != nil {
-		log.Printf("monitor: record event: %v", err)
+	if err := events.add(ctx, ev); err != nil {
+		log.Printf("monitor: record event: %v (kept, retried next tick)", err)
 	}
 	send, extra := true, ""
 	if gate != nil {
@@ -598,25 +511,6 @@ func fireTransition(ctx context.Context, ch *chstore.Client, eventsChain *ledger
 		}
 		postDiscord(discord, cfg.Discord, text)
 	}
-}
-
-// commitEvent appends an event to the events table and its ledger entry, then
-// advances the events chain (same retry-safe ordering as probe batches).
-func commitEvent(ctx context.Context, ch *chstore.Client, chain *ledger.Chain, ev model.Event) error {
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	hseq, _ := chain.Head()
-	seq := hseq + 1
-	ev.Stream, ev.Seq = "events", seq
-	e := chain.Build(ledger.KindEvent, []string{ev.Canonical()}, ev.TS.Unix(), ev.TS.Unix())
-	if err := ch.InsertEvent(cctx, ev); err != nil {
-		return fmt.Errorf("insert event: %w", err)
-	}
-	if err := ch.InsertLedger(cctx, e, fmt.Sprintf("events:%d:ledger", seq)); err != nil {
-		return fmt.Errorf("insert event ledger entry: %w", err)
-	}
-	chain.Commit(e)
-	return nil
 }
 
 // checkpointLoop periodically signs the head of every chain (all vantages + events)

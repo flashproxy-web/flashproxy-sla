@@ -126,8 +126,9 @@ func (c *Client) InsertProbes(ctx context.Context, rs []model.ProbeResult, dedup
 	return err
 }
 
-// InsertEvent records a deploy/maintenance/status-change marker.
-func (c *Client) InsertEvent(ctx context.Context, e model.Event) error {
+// InsertEvent records a deploy/maintenance/status-change marker. dedupToken
+// ("events:<seq>") only takes effect if sla.events has non_replicated_deduplication_window.
+func (c *Client) InsertEvent(ctx context.Context, e model.Event, dedupToken string) error {
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(map[string]any{
 		"ts":      e.TS.UTC().Format(chTime),
@@ -139,7 +140,7 @@ func (c *Client) InsertEvent(ctx context.Context, e model.Event) error {
 	}); err != nil {
 		return err
 	}
-	_, err := c.exec(ctx, fmt.Sprintf("INSERT INTO %s.events FORMAT JSONEachRow", c.db), &buf, nil)
+	_, err := c.exec(ctx, fmt.Sprintf("INSERT INTO %s.events FORMAT JSONEachRow", c.db), &buf, dedupExtra(dedupToken))
 	return err
 }
 
