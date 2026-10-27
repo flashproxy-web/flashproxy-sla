@@ -82,7 +82,7 @@ data — not just from the source.
 
 | Component | What it does |
 |---|---|
-| `cmd/origin` | Deterministic dual-stack upstream (`/connect`, `/bytes/{n}`, `/small`, `/hold`). Pure SLA signal, no third-party variance. |
+| `cmd/origin` | Deterministic dual-stack upstream (`/connect`, `/bytes/{n}`, `/small`, `/hold`). Pure SLA signal, no third-party variance. `/bytes/{n}` above `-max-bytes` (default 5 MiB) serves the cap and sets `X-Bytes-Capped: requested=<n>; served=<cap>`. |
 | `cmd/worker` | Runs every scenario from one vantage (via proxy + direct), writes results **directly** to ClickHouse as the `sla_writer` role, and appends an integrity-ledger entry per batch. The only component that touches a real proxy. **Exactly one worker per vantage** (the vantage is the ledger stream key). Set `"monitor": true` on one to evaluate SLO, fire Discord alerts, and sign ledger checkpoints. Drains on shutdown and retains batches on transient errors, so deploys/outages don't drop SLA data. |
 | `cmd/website` | **Read-only.** Server-renders the status page and `/sla`, serves the JSON API, and publishes the public read-only key + SLO thresholds + ledger public key at `/api/meta` — all as the `sla_reader` role; never writes. Hardened HTTP server (timeouts, recovery, security headers) with a real ClickHouse readiness check. |
 | `cmd/verify` | **Standalone public verifier.** Recomputes every batch/entry hash and checks every Ed25519 checkpoint signature using only public read access — the tool anyone runs to confirm the data is untampered. |

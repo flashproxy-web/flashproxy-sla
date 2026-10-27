@@ -5,6 +5,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"io"
 	"log"
@@ -16,7 +17,11 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address (use :PORT for dual-stack v4+v6)")
+	maxBytes := flag.Int("max-bytes", 5<<20, "hard cap on /bytes/{n} response size; larger requests are served this many bytes")
 	flag.Parse()
+	if *maxBytes < 1 {
+		log.Fatalf("origin: -max-bytes must be >= 1, got %d", *maxBytes)
+	}
 
 	mux := http.NewServeMux()
 
@@ -31,16 +36,8 @@ func main() {
 		w.Write(deterministic(4096))
 	})
 
-	// /bytes/{n} — exactly n deterministic bytes, for streaming/large-object.
-	mux.HandleFunc("/bytes/", func(w http.ResponseWriter, r *http.Request) {
-		n, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/bytes/"))
-		if err != nil || n < 0 || n > 1<<30 {
-			http.Error(w, "bad size", http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Length", strconv.Itoa(n))
-		writeDeterministic(w, n)
-	})
+	// /bytes/{n} — n deterministic bytes (capped at -max-bytes), for streaming/large-object.
+	mux.HandleFunc("/bytes/", bytesHandler(*maxBytes))
 
 	// /hold?ms=N — trickles bytes for N ms, for the long-session archetype.
 	mux.HandleFunc("/hold", func(w http.ResponseWriter, r *http.Request) {
@@ -61,9 +58,33 @@ func main() {
 
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") })
 
-	log.Printf("origin listening on %s", *addr)
+	log.Printf("origin listening on %s (max-bytes %d)", *addr, *maxBytes)
 	srv := &http.Server{Addr: *addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	log.Fatal(srv.ListenAndServe())
+}
+
+// bytesHandler serves /bytes/{n}: exactly n deterministic bytes. A malformed or negative
+// n is a 400. An n above maxBytes (including one too large to parse) is not an error: the
+// response is exactly maxBytes bytes (Content-Length = maxBytes) and carries the header
+//
+//	X-Bytes-Capped: requested=<n as sent>; served=<maxBytes>
+//
+// which is absent on uncapped responses.
+func bytesHandler(maxBytes int) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		raw := strings.TrimPrefix(r.URL.Path, "/bytes/")
+		n, err := strconv.ParseInt(raw, 10, 64) // out of range -> ±MaxInt64 with ErrRange
+		if (err != nil && !errors.Is(err, strconv.ErrRange)) || n < 0 {
+			http.Error(w, "bad size", http.StatusBadRequest)
+			return
+		}
+		if n > int64(maxBytes) {
+			w.Header().Set("X-Bytes-Capped", "requested="+raw+"; served="+strconv.Itoa(maxBytes))
+			n = int64(maxBytes)
+		}
+		w.Header().Set("Content-Length", strconv.FormatInt(n, 10))
+		writeDeterministic(w, int(n))
+	}
 }
 
 func deterministic(n int) []byte {

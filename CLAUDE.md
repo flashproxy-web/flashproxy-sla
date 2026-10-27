@@ -88,7 +88,8 @@ Three binaries, strictly separated by what they touch:
   (see incident statements below); it degrades gracefully when the statements table is absent.
 - **`cmd/origin`** — deterministic upstream (`/connect`, `/bytes/{n}`, `/small`, `/hold`) so
   payload metrics are pure SLA signal with no third-party variance. Bind dual-stack (`:8080`
-  serves v4+v6) so IPv6 packages exercise v6 egress. The headline `connect` probe is
+  serves v4+v6) so IPv6 packages exercise v6 egress. `/bytes/{n}` above `-max-bytes` (default
+  5 MiB) is not an error: it serves exactly the cap plus `X-Bytes-Capped: requested=<n>; served=<cap>`. The headline `connect` probe is
   **best-of-N** (`probe.ConnectBest`) over a **provider-diverse pool** (~10 connectivity-check
   endpoints across 8 providers — mozilla/google/microsoft/apple/cloudflare/ubuntu/debian/gnome).
   Each cycle it **stratifies**: the `origin`-group (or ungrouped) endpoints are ALWAYS probed
