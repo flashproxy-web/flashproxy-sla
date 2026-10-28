@@ -8,18 +8,34 @@ import (
 	"testing"
 )
 
+// query runs QueryJSON against a server that answers with body (HTTP 200).
+func query(body string) ([]map[string]any, error) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+	return New(srv.URL, "sla", "u", "p").QueryJSON(context.Background(), "SELECT 1")
+}
+
 // row decodes one ClickHouse FORMAT JSON body through QueryJSON (the real decoder).
 func row(t *testing.T, body string) map[string]any {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"meta":[],"data":[` + body + `],"rows":1}`))
-	}))
-	defer srv.Close()
-	rows, err := New(srv.URL, "sla", "u", "p").QueryJSON(context.Background(), "SELECT 1")
+	rows, err := query(`{"meta":[],"data":[` + body + `],"rows":1}`)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("QueryJSON: %v (%d rows)", err, len(rows))
 	}
 	return rows[0]
+}
+
+func TestQueryJSONRejectsTrailingData(t *testing.T) {
+	for _, tail := range []string{"\nCode: 241. DB::Exception: Memory limit exceeded", "}", "]", `{"data":[]}`} {
+		if _, err := query(`{"data":[{"a":1}],"rows":1}` + tail); err == nil {
+			t.Errorf("trailing %q: no error", tail)
+		}
+	}
+	if rows, err := query(`{"data":[{"a":1}],"rows":1}` + "\n\t "); err != nil || len(rows) != 1 {
+		t.Errorf("trailing whitespace: %v", err)
+	}
 }
 
 func TestQueryJSONKeepsNumbersExact(t *testing.T) {

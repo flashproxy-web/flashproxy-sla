@@ -294,6 +294,9 @@ func (c *Client) QueryJSON(ctx context.Context, sql string) ([]map[string]any, e
 	if err := dec.Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode clickhouse json: %w", err)
 	}
+	if _, err := dec.Token(); err != io.EOF { // json.Unmarshal rejected trailing data too
+		return nil, fmt.Errorf("decode clickhouse json: trailing data")
+	}
 	return out.Data, nil
 }
 
