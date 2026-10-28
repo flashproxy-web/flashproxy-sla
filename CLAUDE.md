@@ -132,7 +132,10 @@ Three binaries, strictly separated by what they touch:
   splits a batch), because the public profile's `max_result_rows` = 1M is below one stream's
   `probe_raw` size; don't raise that cap, keep paging. Each stream's ledger is read first and
   fixes the head; rows are read only up to it, so batches written during a run are skipped,
-  not failed. Any read error or inconsistent page fails the run. **`cmd/keygen`** mints the keypair.
+  not failed. Any read error or inconsistent page fails the run. Checkpoints are read
+  **before** the ledgers and anchor them: every checkpoint must name an entry this run read
+  and verified (the ledger has no TTL), so a short or empty ledger read fails the run, as does
+  a listed stream with no entries. **`cmd/keygen`** mints the keypair.
 
 Shared `internal/` packages:
 
@@ -333,8 +336,8 @@ and website users read statements with no grant change.
     chain; the `checkpointLoop` re-signs current heads within `checkpoint_every_sec`. Leaving
     them is a latent false-positive: a stream that re-seeds low (like `events` → seq 1) will over
     time re-reach the old checkpoint seqs with *different* entry_hashes, and `cmd/verify` will
-    then flag tampering. (High-seq `aws-*` streams don't collide, but the stale checkpoints still
-    read as orphaned.)
+    then flag tampering. Any stale checkpoint whose (stream, seq) is not in the current ledger
+    also fails `cmd/verify` (checkpoints anchor the chain).
 
 ## Sibling repos
 

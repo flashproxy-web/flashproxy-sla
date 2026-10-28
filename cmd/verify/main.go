@@ -86,7 +86,7 @@ type verifier struct {
 	out       io.Writer
 	pub       []byte // ed25519 public key, or nil
 
-	// validated[stream][seq] = recomputed-and-confirmed entry_hash
+	// validated[stream][seq] = recomputed-and-confirmed entry_hash ("" = read, failed)
 	validated map[string]map[uint64]string
 	problems  int
 }
@@ -94,6 +94,14 @@ type verifier struct {
 func (v *verifier) run(ctx context.Context) error {
 	v.validated = map[string]map[uint64]string{}
 
+	// Checkpoints are read BEFORE the ledgers: each attests a head that was in the
+	// ledger when it was signed, and the ledger is append-only with no TTL, so every
+	// one of them must be among the entries this run reads. (A checkpoint signed
+	// mid-run is simply not read.)
+	cps, err := v.src.checkpoints(ctx)
+	if err != nil {
+		return fmt.Errorf("read checkpoints: %w", err)
+	}
 	streams, err := v.src.streams(ctx)
 	if err != nil {
 		return fmt.Errorf("list streams: %w", err)
@@ -106,9 +114,7 @@ func (v *verifier) run(ctx context.Context) error {
 			return err
 		}
 	}
-	if err := v.verifyCheckpoints(ctx); err != nil {
-		return err
-	}
+	v.verifyCheckpoints(cps)
 	if v.problems > 0 {
 		return fmt.Errorf("%d problem(s) detected", v.problems)
 	}
@@ -152,6 +158,9 @@ func (v *verifier) verifyStream(ctx context.Context, stream string) error {
 	var head uint64
 	if len(entries) > 0 {
 		head = entries[len(entries)-1].Seq
+	} else { // streams() lists only streams that have ledger entries
+		v.problems++
+		v.printf("  [%s] FAIL: listed as a ledger stream but no entries were read\n", stream)
 	}
 	rows := newRowCursor(func(ctx context.Context, from uint64, limit int) ([]seqRow, error) {
 		page, err := v.src.rowPage(ctx, stream, from, head, limit)
@@ -191,6 +200,7 @@ func (v *verifier) verifyStream(ctx context.Context, stream string) error {
 		if err := ledger.VerifyEntry(e, batch, prev); err != nil {
 			v.problems++
 			v.printf("  [%s] FAIL seq %d: %v\n", stream, e.Seq, err)
+			v.validated[stream][e.Seq] = "" // counted here, not again by a checkpoint
 		} else {
 			v.validated[stream][e.Seq] = e.EntryHash
 		}
@@ -226,18 +236,20 @@ func (s *chSource) checkpoints(ctx context.Context) ([]ledger.Checkpoint, error)
 	return out, nil
 }
 
-func (v *verifier) verifyCheckpoints(ctx context.Context) error {
-	rows, err := v.src.checkpoints(ctx)
-	if err != nil {
-		return fmt.Errorf("read checkpoints: %w", err)
-	}
+func (v *verifier) verifyCheckpoints(rows []ledger.Checkpoint) {
 	var sigOK, sigSkip, consistent int
 	for _, cp := range rows {
 		// The checkpoint must attest the same entry_hash we recomputed at that seq.
-		if got, ok := v.validated[cp.Stream][cp.Seq]; ok && got != cp.EntryHash {
+		got, ok := v.validated[cp.Stream][cp.Seq]
+		switch {
+		case !ok:
+			v.problems++
+			v.printf("  checkpoint %s seq %d: attested entry not in the ledger read by this run\n", cp.Stream, cp.Seq)
+		case got == "": // entry failed verification; already counted
+		case got != cp.EntryHash:
 			v.problems++
 			v.printf("  checkpoint %s seq %d: attested entry_hash %s != recomputed %s\n", cp.Stream, cp.Seq, cp.EntryHash, got)
-		} else if ok {
+		default:
 			consistent++
 		}
 		if v.pub != nil {
@@ -253,7 +265,6 @@ func (v *verifier) verifyCheckpoints(ctx context.Context) error {
 	}
 	v.printf("checkpoints: %d total, %d signature(s) valid, %d consistent with chain, %d skipped (no pubkey)\n",
 		len(rows), sigOK, consistent, sigSkip)
-	return nil
 }
 
 // ledgerEntries reads one stream's whole ledger (one small entry per batch) in pages.
