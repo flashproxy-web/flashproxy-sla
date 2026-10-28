@@ -74,6 +74,10 @@ func TestChSourceFailsClosed(t *testing.T) {
 			return len(r), err
 		}, [][2]string{{"ts", `"x"`}, {"seq", `1.5`}, {"seq", ""}}},
 	}
+	// Checkpoint.TS is int64: a timestamp past the UInt32 range still decodes exactly.
+	if cps, err := fakeCH(t, with(cpRow, "ts", `5000000000`), "").checkpoints(ctx); err != nil || len(cps) != 1 || cps[0].TS != 5000000000 {
+		t.Fatalf("checkpoint ts past 2^32: %+v, %v", cps, err)
+	}
 	for _, rd := range reads {
 		if n, err := rd.read(fakeCH(t, rd.row, "")); err != nil || n != 1 {
 			t.Fatalf("%s: valid row: %d rows, err %v", rd.name, n, err)

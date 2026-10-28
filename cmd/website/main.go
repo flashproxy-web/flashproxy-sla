@@ -192,7 +192,7 @@ type component struct {
 	DefaultVantage string        `json:"default_vantage"`
 	ResponseMsAvg  float64       `json:"response_ms_avg"`
 	SuccessPct     float64       `json:"success_pct"`
-	Samples        float64       `json:"samples"`
+	Samples        uint64        `json:"samples"`
 	UptimePct      float64       `json:"uptime_pct"`
 	Bars           []slo.Bar     `json:"bars"`
 	Vantages       []vantageView `json:"vantages"`
@@ -203,7 +203,7 @@ type vantageView struct {
 	Status        string    `json:"status"`
 	ResponseMsAvg float64   `json:"response_ms_avg"`
 	SuccessPct    float64   `json:"success_pct"`
-	Samples       float64   `json:"samples"`
+	Samples       uint64    `json:"samples"`
 	AgeSeconds    int64     `json:"age_seconds"`
 	UptimePct     float64   `json:"uptime_pct"`
 	Bars          []slo.Bar `json:"bars"`
@@ -648,11 +648,11 @@ func (s *server) loadStatements(ctx context.Context) []statementRow {
 	for _, m := range rows {
 		out = append(out, statementRow{
 			pkg:    chstore.Str(m, "package"),
-			start:  int64(chstore.Uint[uint32](m, "pstart", &err)),
-			end:    int64(chstore.Uint[uint32](m, "pend", &err)),
+			start:  chstore.Int64(m, "pstart", &err),
+			end:    chstore.Int64(m, "pend", &err),
 			body:   chstore.Str(m, "body"),
 			author: chstore.Str(m, "author"),
-			pub:    int64(chstore.Uint[uint32](m, "pub", &err)),
+			pub:    chstore.Int64(m, "pub", &err),
 		})
 	}
 	if err != nil {

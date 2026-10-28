@@ -2,6 +2,7 @@ package slo
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -35,5 +36,28 @@ func TestFetchMinutesFailsOnBadValue(t *testing.T) {
 		if _, err := fetch(strings.Replace(good, kv[0], kv[1], 1)); err == nil {
 			t.Errorf("%s -> %s: no error", kv[0], kv[1])
 		}
+	}
+}
+
+// Values are decoded straight into the destination types (Minute.T int64,
+// Samples uint64): text that does not fit uint32 must still decode exactly, and
+// the published JSON of a count is a plain integer.
+func TestFetchMinutesDestinationTypes(t *testing.T) {
+	row := `{"package":"p","vantage":"v","t":"5000000000","response_ms_avg":12.5,"success_pct":99.25,"samples":"4294967296"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[` + row + `]}`))
+	}))
+	defer srv.Close()
+	got, err := fetchMinutes(context.Background(), chstore.New(srv.URL, "sla", "u", "p"), "sla", 15)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := got["p"]["v"][5000000000]
+	if !ok || m.T != 5000000000 || m.Samples != 4294967296 {
+		t.Fatalf("minute = %+v (found %v)", m, ok)
+	}
+	b, _ := json.Marshal(Bar{T: m.T, Status: "operational", ResponseMsAvg: m.ResponseMsAvg, SuccessPct: m.SuccessPct, Samples: m.Samples})
+	if !strings.Contains(string(b), `"samples":4294967296`) {
+		t.Fatalf("json: %s", b)
 	}
 }

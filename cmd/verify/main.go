@@ -229,7 +229,7 @@ func (s *chSource) checkpoints(ctx context.Context) ([]ledger.Checkpoint, error)
 	for _, m := range rows {
 		out = append(out, ledger.Checkpoint{
 			Stream: chstore.Str(m, "stream"), Seq: chstore.Uint[uint64](m, "seq", &err),
-			EntryHash: chstore.Str(m, "entry_hash"), TS: int64(chstore.Uint[uint32](m, "ts", &err)),
+			EntryHash: chstore.Str(m, "entry_hash"), TS: chstore.Int64(m, "ts", &err),
 			PubKeyID: chstore.Str(m, "pubkey_id"), Signature: chstore.Str(m, "signature"),
 		})
 	}

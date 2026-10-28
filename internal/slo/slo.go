@@ -65,7 +65,7 @@ type Status struct {
 	Status        string  `json:"status"`
 	ResponseMsAvg float64 `json:"response_ms_avg"` // avg over the most recent data minute
 	SuccessPct    float64 `json:"success_pct"`
-	Samples       float64 `json:"samples"`
+	Samples       uint64  `json:"samples"`
 	AgeSeconds    int64   `json:"age_seconds"`
 }
 
@@ -74,7 +74,7 @@ type Minute struct {
 	T             int64
 	ResponseMsAvg float64
 	SuccessPct    float64
-	Samples       float64
+	Samples       uint64
 }
 
 // MinutesSQL returns per-(package, vantage, minute) avg round-trip response time (ttfb)
@@ -175,7 +175,7 @@ type Bar struct {
 	Status        string  `json:"status"`
 	ResponseMsAvg float64 `json:"response_ms_avg"`
 	SuccessPct    float64 `json:"success_pct"`
-	Samples       float64 `json:"samples"`
+	Samples       uint64  `json:"samples"`
 }
 
 // VantageRollup is one (package, vantage) over the window: classified bars, the
@@ -245,10 +245,10 @@ func fetchMinutes(ctx context.Context, ch *chstore.Client, db string, windowMin 
 		if out[pkg][van] == nil {
 			out[pkg][van] = map[int64]Minute{}
 		}
-		t := int64(chstore.Uint[uint32](m, "t", &err))
+		t := chstore.Int64(m, "t", &err)
 		out[pkg][van][t] = Minute{
 			T: t, ResponseMsAvg: chstore.Float64(m, "response_ms_avg", &err),
-			SuccessPct: chstore.Float64(m, "success_pct", &err), Samples: float64(chstore.Uint[uint32](m, "samples", &err)),
+			SuccessPct: chstore.Float64(m, "success_pct", &err), Samples: chstore.Uint[uint64](m, "samples", &err),
 		}
 	}
 	if err != nil {
@@ -267,7 +267,7 @@ type PackageRollup struct {
 	BestVantage   string
 	ResponseMsAvg float64
 	SuccessPct    float64
-	Samples       float64
+	Samples       uint64
 	AgeSeconds    int64
 	UptimePct     float64
 	Bars          []Bar
@@ -297,7 +297,8 @@ func rollupPackageSeries(byVantage map[string]map[int64]Minute, grid []int64, no
 	bestVanAt := make(map[int64]string, len(grid))
 	for _, t := range grid {
 		var hasData, availAny bool
-		var bestAvg, samples float64
+		var bestAvg float64
+		var samples uint64
 		bestVan := ""
 		for _, v := range vans {
 			m, ok := byVantage[v][t]
