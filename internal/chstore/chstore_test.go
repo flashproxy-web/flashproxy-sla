@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -164,5 +165,21 @@ func TestFloatColumns(t *testing.T) {
 	}
 	if got := Num(m, "pct"); got != 0 { // Num stays lenient (display values only)
 		t.Errorf("Num malformed: %v", got)
+	}
+}
+
+// A ClickHouse error raised after the response started can be written in-band as
+// an "exception" key next to a truncated "data"; that must not read as a short page.
+func TestQueryJSONExceptionKey(t *testing.T) {
+	rows, err := query(`{"meta":[],"data":[{"a":1}],"rows":1,"exception":"Code: 241. DB::Exception: Memory limit (total) exceeded"}`)
+	if err == nil {
+		t.Fatalf("exception key ignored: got %d rows, no error", len(rows))
+	}
+	if !strings.Contains(err.Error(), "Code: 241") {
+		t.Errorf("error does not carry the exception text: %v", err)
+	}
+	_, err = query(`{"data":[],"exception":"` + strings.Repeat("x", 5000) + `"}`)
+	if err == nil || len(err.Error()) > 400 {
+		t.Errorf("long exception not bounded: len %d", len(err.Error()))
 	}
 }

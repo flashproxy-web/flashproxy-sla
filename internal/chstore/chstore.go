@@ -287,7 +287,8 @@ func (c *Client) QueryJSON(ctx context.Context, sql string) ([]map[string]any, e
 		return nil, err
 	}
 	var out struct {
-		Data []map[string]any `json:"data"`
+		Data      []map[string]any `json:"data"`
+		Exception string           `json:"exception"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(b))
 	dec.UseNumber()
@@ -296,6 +297,14 @@ func (c *Client) QueryJSON(ctx context.Context, sql string) ([]map[string]any, e
 	}
 	if _, err := dec.Token(); err != io.EOF { // json.Unmarshal rejected trailing data too
 		return nil, fmt.Errorf("decode clickhouse json: trailing data")
+	}
+	// An error raised after the response started is written in-band next to a
+	// truncated "data"; returning those rows would read as a short (final) page.
+	if e := out.Exception; e != "" {
+		if len(e) > 300 {
+			e = e[:300] + "..."
+		}
+		return nil, fmt.Errorf("clickhouse exception in result: %s", e)
 	}
 	return out.Data, nil
 }
