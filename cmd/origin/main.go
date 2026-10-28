@@ -5,7 +5,6 @@
 package main
 
 import (
-	"errors"
 	"flag"
 	"io"
 	"log"
@@ -63,9 +62,10 @@ func main() {
 	log.Fatal(srv.ListenAndServe())
 }
 
-// bytesHandler serves /bytes/{n}: exactly n deterministic bytes. A malformed or negative
-// n is a 400. An n above maxBytes (including one too large to parse) is not an error: the
-// response is exactly maxBytes bytes (Content-Length = maxBytes) and carries the header
+// bytesHandler serves /bytes/{n}: exactly n deterministic bytes. n must be digits only
+// (no sign or punctuation) and at most 2147483647; anything else is a 400 with a message
+// stating that syntax. An n above maxBytes is not an error: the response is exactly
+// maxBytes bytes (Content-Length = maxBytes) and carries the header
 //
 //	X-Bytes-Capped: requested=<n as sent>; served=<maxBytes>
 //
@@ -73,17 +73,18 @@ func main() {
 func bytesHandler(maxBytes int) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		raw := strings.TrimPrefix(r.URL.Path, "/bytes/")
-		n, err := strconv.ParseInt(raw, 10, 64) // out of range -> ±MaxInt64 with ErrRange
-		if (err != nil && !errors.Is(err, strconv.ErrRange)) || n < 0 {
-			http.Error(w, "bad size", http.StatusBadRequest)
+		v, err := strconv.ParseUint(raw, 10, 31) // digits only, 0..2147483647
+		if err != nil {
+			http.Error(w, "bad size: use /bytes/N, N = digits only (no sign or punctuation), 0 to 2147483647", http.StatusBadRequest)
 			return
 		}
-		if n > int64(maxBytes) {
+		n := int(v) // exact: v fits in 31 bits
+		if n > maxBytes {
 			w.Header().Set("X-Bytes-Capped", "requested="+raw+"; served="+strconv.Itoa(maxBytes))
-			n = int64(maxBytes)
+			n = maxBytes
 		}
-		w.Header().Set("Content-Length", strconv.FormatInt(n, 10))
-		writeDeterministic(w, int(n))
+		w.Header().Set("Content-Length", strconv.Itoa(n))
+		writeDeterministic(w, n)
 	}
 }
 
