@@ -109,6 +109,9 @@ func (v *verifier) run(ctx context.Context) error {
 	if len(streams) == 0 {
 		return fmt.Errorf("no ledger streams found")
 	}
+	if v.pub != nil && len(cps) == 0 { // a signing deployment always has checkpoints
+		return fmt.Errorf("no checkpoints read: nothing to check the -pubkey against or anchor the ledger to")
+	}
 	for _, s := range streams {
 		if err := v.verifyStream(ctx, s); err != nil {
 			return err
@@ -238,13 +241,26 @@ func (s *chSource) checkpoints(ctx context.Context) ([]ledger.Checkpoint, error)
 
 func (v *verifier) verifyCheckpoints(rows []ledger.Checkpoint) {
 	var sigOK, sigSkip, consistent int
+	// Unread attested entries are summarised per stream: the head is re-signed every
+	// tick, so one short stream can have thousands of checkpoints.
+	type span struct {
+		n      int
+		lo, hi uint64
+	}
+	var order []string
+	missing := map[string]*span{}
 	for _, cp := range rows {
 		// The checkpoint must attest the same entry_hash we recomputed at that seq.
 		got, ok := v.validated[cp.Stream][cp.Seq]
 		switch {
 		case !ok:
-			v.problems++
-			v.printf("  checkpoint %s seq %d: attested entry not in the ledger read by this run\n", cp.Stream, cp.Seq)
+			sp := missing[cp.Stream]
+			if sp == nil {
+				sp = &span{lo: cp.Seq, hi: cp.Seq}
+				missing[cp.Stream] = sp
+				order = append(order, cp.Stream)
+			}
+			sp.n, sp.lo, sp.hi = sp.n+1, min(sp.lo, cp.Seq), max(sp.hi, cp.Seq)
 		case got == "": // entry failed verification; already counted
 		case got != cp.EntryHash:
 			v.problems++
@@ -262,6 +278,10 @@ func (v *verifier) verifyCheckpoints(rows []ledger.Checkpoint) {
 		} else {
 			sigSkip++
 		}
+	}
+	for _, s := range order {
+		v.problems++
+		v.printf("  checkpoints %s: %d attest seq %d..%d, not in the ledger read by this run\n", s, missing[s].n, missing[s].lo, missing[s].hi)
 	}
 	v.printf("checkpoints: %d total, %d signature(s) valid, %d consistent with chain, %d skipped (no pubkey)\n",
 		len(rows), sigOK, consistent, sigSkip)

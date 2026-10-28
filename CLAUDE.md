@@ -134,8 +134,9 @@ Three binaries, strictly separated by what they touch:
   fixes the head; rows are read only up to it, so batches written during a run are skipped,
   not failed. Any read error or inconsistent page fails the run. Checkpoints are read
   **before** the ledgers and anchor them: every checkpoint must name an entry this run read
-  and verified (the ledger has no TTL), so a short or empty ledger read fails the run, as does
-  a listed stream with no entries. **`cmd/keygen`** mints the keypair.
+  and verified (the ledger has no TTL), so a ledger read short below the newest checkpoint
+  fails the run, as does a listed stream with no entries; with `-pubkey`, an empty checkpoint
+  read fails too. **`cmd/keygen`** mints the keypair.
 
 Shared `internal/` packages:
 
@@ -325,7 +326,8 @@ and website users read statements with no grant change.
   reset (verified the hard way during the 2026-08-14 hostname cutover):
   - Truncating **`sla.ledger` only** (keeping `probe_raw`, e.g. to preserve recovered rows) does
     NOT reset seq to 1. The worker resumes at `probe_raw`'s max seq and re-roots the chain there
-    with `prev = GenesisHash`. That still **passes `cmd/verify`** — `verifyStream` roots every
+    with `prev = GenesisHash`. That still **passes `cmd/verify` provided `sla.ledger_checkpoints`
+    is truncated too** (see below) — `verifyStream` roots every
     chain at Genesis against its *first present* entry and does not require seq to start at 1 —
     the chain just carries a cosmetically high starting seq. The pre-reset rows below the new
     head become uncovered-by-ledger (honest data-loss gap), which is fine.
@@ -333,11 +335,10 @@ and website users read statements with no grant change.
     data). Only the `events` stream resets to 1 on a ledger-only truncate, because its
     `ProbeMaxSeq` reads `probe_raw WHERE stream='events'`, which is always empty.
   - **Also truncate `sla.ledger_checkpoints`.** Old checkpoints attest heads of the pre-reset
-    chain; the `checkpointLoop` re-signs current heads within `checkpoint_every_sec`. Leaving
-    them is a latent false-positive: a stream that re-seeds low (like `events` → seq 1) will over
-    time re-reach the old checkpoint seqs with *different* entry_hashes, and `cmd/verify` will
-    then flag tampering. Any stale checkpoint whose (stream, seq) is not in the current ledger
-    also fails `cmd/verify` (checkpoints anchor the chain).
+    chain; the `checkpointLoop` re-signs current heads within `checkpoint_every_sec`. Leftover
+    checkpoints after a ledger reset make `cmd/verify` FAIL immediately: every checkpoint must
+    name an entry in the current ledger (checkpoints anchor the chain), and one at a seq the
+    new chain re-reaches with a different entry_hash is reported as tampering.
 
 ## Sibling repos
 

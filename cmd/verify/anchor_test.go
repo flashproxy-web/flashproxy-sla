@@ -50,12 +50,12 @@ func TestCheckpointsAnchorTheLedger(t *testing.T) {
 			f := fixture(t, priv, 1, 1, 1, 1, 1)
 			f.entries["s1"] = f.entries["s1"][:3]
 			return f
-		}, false, "checkpoint s1 seq 5: attested entry not in the ledger read"},
+		}, false, "checkpoints s1: 1 attest seq 5..5, not in the ledger read"},
 		{"checkpoint for a stream the ledger does not list", func() source {
 			f := fixture(t, priv, 1, 1)
 			f.cps = append(f.cps, ledger.SignCheckpoint(priv, "s2", 1, strings.Repeat("0", 64), fixtureBase.Unix()))
 			return f
-		}, false, "checkpoint s2 seq 1: attested entry not in the ledger read"},
+		}, false, "checkpoints s2: 1 attest seq 1..1, not in the ledger read"},
 		{"checkpoint below the head (ledger grew after signing)", func() source {
 			f := fixture(t, priv, 1, 1, 1)
 			f.cps[0] = ledger.SignCheckpoint(priv, "s1", 2, f.entries["s1"][1].EntryHash, fixtureBase.Unix())
@@ -116,5 +116,57 @@ func TestLedgerDataMissingFails(t *testing.T) {
 				t.Fatalf("run passed with an empty ledger read:\n%s", got.out)
 			}
 		})
+	}
+}
+
+// The head is re-signed every tick, so a short stream can carry thousands of
+// checkpoints: the run reports them as one line and one problem per stream.
+func TestUnreadCheckpointsSummarised(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	f := fixture(t, priv, 1, 1, 1, 1, 1)
+	f.entries["s1"] = f.entries["s1"][:2]
+	e := f.entries["s1"]
+	for i := 0; i < 1500; i++ {
+		f.cps = append(f.cps, f.cps[0])
+	}
+	f.cps = append(f.cps, ledger.SignCheckpoint(priv, "s1", 2, e[1].EntryHash, fixtureBase.Unix()))
+	got := runVerify(f, pub, 2)
+	if got.err == "" || got.problems != 1 {
+		t.Fatalf("want a failed run with 1 problem, got %+v", got.err)
+	}
+	if n := strings.Count(got.out, "not in the ledger read"); n != 1 || !strings.Contains(got.out, "checkpoints s1: 1501 attest seq 5..5") {
+		t.Fatalf("%d summary line(s):\n%.2000s", n, got.out)
+	}
+}
+
+// cpSource serves the ledger from a fixture but checkpoints from a ClickHouse
+// answer, so an empty "data" goes through the real decoder.
+type cpSource struct {
+	*fakeSource
+	ch *chSource
+}
+
+func (s cpSource) checkpoints(ctx context.Context) ([]ledger.Checkpoint, error) {
+	return s.ch.checkpoints(ctx)
+}
+
+// With -pubkey, a checkpoint read that comes back empty must not switch the
+// anchor off; without -pubkey (unsigned deployments have none) it is allowed.
+func TestEmptyCheckpointReadWithPubkeyFails(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	for _, body := range []string{`{"meta":[],"data":null,"rows":0}`, `{"meta":[],"rows":0}`, `{"data":[]}`} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(body)) }))
+		src := cpSource{fixture(t, priv, 1, 1), &chSource{ch: chstore.New(srv.URL, "sla", "u", "p"), db: "sla"}}
+		if got := runVerify(src, pub, 2); !strings.Contains(got.err, "no checkpoints read") {
+			t.Errorf("%s with -pubkey: err %q\n%s", body, got.err, got.out)
+		}
+		if got := runVerify(src, nil, 2); got.err != "" {
+			t.Errorf("%s without -pubkey: %q", body, got.err)
+		}
+		srv.Close()
+	}
+	// A brand-new deployment (no streams yet) fails as before, not with this error.
+	if got := runVerify(&fakeSource{entries: map[string][]ledger.Entry{}}, pub, 2); got.err != "no ledger streams found" {
+		t.Fatalf("empty db: %q", got.err)
 	}
 }
