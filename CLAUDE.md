@@ -20,7 +20,7 @@ published source URL referenced in code/docs is `github.com/flashproxy-web/flash
 make build                  # builds bin/{origin,worker,website,verify,keygen} (CGO_ENABLED=0, -trimpath)
 make origin|worker|website|verify|keygen   # one binary
 make vet                    # go vet ./...
-make test                   # go test ./...  (ledger, slo, probe have tests)
+make test                   # go test ./...  (no tests: cmd/website, cmd/keygen, internal/model)
 go test ./internal/slo -run TestEvaluator  # single test
 go run ./cmd/keygen         # generate the Ed25519 ledger-signing keypair
 

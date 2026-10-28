@@ -331,7 +331,7 @@ func Num(m map[string]any, k string) float64 {
 }
 
 type unsigned interface {
-	~uint8 | ~uint32 | ~uint64
+	uint8 | uint32 | uint64
 }
 
 // Uint decodes integer column k exactly into T: the value must be a base-10

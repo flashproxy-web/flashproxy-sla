@@ -29,6 +29,35 @@ func row(t *testing.T, body string) map[string]any {
 	return rows[0]
 }
 
+// fake returns a Client whose every query is answered with body.
+func fake(t *testing.T, body string) *Client {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return New(srv.URL, "sla", "u", "p")
+}
+
+// A bad seq must surface as an error: resumeChain would otherwise restart the
+// chain at seq 0.
+func TestResumeReadsFailOnBadSeq(t *testing.T) {
+	ctx := context.Background()
+	if seq, h, err := fake(t, `{"data":[{"seq":"18446744073709551615","entry_hash":"e"}]}`).LedgerHead(ctx, "s"); err != nil || seq != 18446744073709551615 || h != "e" {
+		t.Fatalf("LedgerHead valid: %d %q %v", seq, h, err)
+	}
+	if n, err := fake(t, `{"data":[{"s":7}]}`).ProbeMaxSeq(ctx, "s"); err != nil || n != 7 {
+		t.Fatalf("ProbeMaxSeq valid: %d %v", n, err)
+	}
+	for _, bad := range []string{`1.5`, `"x"`, `-1`, `null`} {
+		if seq, _, err := fake(t, `{"data":[{"seq":`+bad+`,"entry_hash":"e"}]}`).LedgerHead(ctx, "s"); err == nil {
+			t.Errorf("LedgerHead seq=%s: no error (seq %d)", bad, seq)
+		}
+		if n, err := fake(t, `{"data":[{"s":`+bad+`}]}`).ProbeMaxSeq(ctx, "s"); err == nil {
+			t.Errorf("ProbeMaxSeq s=%s: no error (%d)", bad, n)
+		}
+	}
+}
+
 func TestQueryJSONRejectsTrailingData(t *testing.T) {
 	for _, tail := range []string{"\nCode: 241. DB::Exception: Memory limit exceeded", "}", "]", `{"data":[]}`} {
 		if _, err := query(`{"data":[{"a":1}],"rows":1}` + tail); err == nil {
@@ -61,7 +90,7 @@ func TestIntegerAccessors(t *testing.T) {
 		"i64n": -9223372036854775808, "i64s": "9223372036854775807", "i64over": "9223372036854775808",
 		"u8": 255, "u8over": 256, "zero": 0,
 		"neg": -1, "negs": "-1", "frac": 1.5, "fracz": 1.0, "exp": 1e3, "word": "abc", "empty": "",
-		"null": null, "bool": true, "arr": [1]
+		"null": null, "bool": true, "arr": [1], "f32over": 1e39
 	}`)
 
 	ok := func(name string, got, want any, err error) {
@@ -105,6 +134,7 @@ func TestIntegerAccessors(t *testing.T) {
 		{"float32 from word", func(e *error) any { return Float32(m, "word", e) }},
 		{"float32 missing", func(e *error) any { return Float32(m, "nope", e) }},
 		{"float32 null", func(e *error) any { return Float32(m, "null", e) }},
+		{"float32 out of range", func(e *error) any { return Float32(m, "f32over", e) }},
 		{"float64 null", func(e *error) any { return Float64(m, "null", e) }},
 		{"float64 missing", func(e *error) any { return Float64(m, "nope", e) }},
 		{"float64 word", func(e *error) any { return Float64(m, "word", e) }},
