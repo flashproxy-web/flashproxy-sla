@@ -165,4 +165,15 @@ func TestQueryJSONExceptionKey(t *testing.T) {
 	if err == nil || len(err.Error()) > 400 {
 		t.Errorf("long exception not bounded: len %d", len(err.Error()))
 	}
+	// Quoted: an embedded newline or a UTF-8 sequence cut at the cap (byte 300 falls
+	// inside an "é" here) stays escaped.
+	_, err = query(`{"data":[],"exception":"line1\nforged log line x` + strings.Repeat("é", 200) + `"}`)
+	if err == nil || strings.ContainsRune(err.Error(), '\n') || !strings.Contains(err.Error(), `\n`) || !strings.Contains(err.Error(), `\x`) {
+		t.Errorf("exception text not quoted: %q", err)
+	}
+	var e error
+	Uint[uint32](row(t, `{"v":"`+strings.Repeat("9", 5000)+`"}`), "v", &e)
+	if e == nil || len(e.Error()) > 150 {
+		t.Errorf("accessor error not bounded: %d bytes", len(e.Error()))
+	}
 }

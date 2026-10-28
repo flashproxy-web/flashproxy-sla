@@ -304,7 +304,7 @@ func (c *Client) QueryJSON(ctx context.Context, sql string) ([]map[string]any, e
 		if len(e) > 300 {
 			e = e[:300] + "..."
 		}
-		return nil, fmt.Errorf("clickhouse exception in result: %s", e)
+		return nil, fmt.Errorf("clickhouse exception in result: %q", e)
 	}
 	return out.Data, nil
 }
@@ -345,7 +345,7 @@ func Uint[T unsigned](m map[string]any, k string, errp *error) T {
 		if v := T(x); perr == nil && uint64(v) == x {
 			return v
 		}
-		err = fmt.Errorf("column %q: %q is not a %T", k, s, T(0))
+		err = fmt.Errorf("column %q: %.64q is not a %T", k, s, T(0))
 	}
 	keepFirst(errp, err)
 	return 0
@@ -359,7 +359,7 @@ func Int64(m map[string]any, k string, errp *error) int64 {
 		if perr == nil {
 			return x
 		}
-		err = fmt.Errorf("column %q: %q is not an int64", k, s)
+		err = fmt.Errorf("column %q: %.64q is not an int64", k, s)
 	}
 	keepFirst(errp, err)
 	return 0
@@ -374,7 +374,7 @@ func Float32(m map[string]any, k string, errp *error) float32 {
 		if perr == nil {
 			return float32(x)
 		}
-		err = fmt.Errorf("column %q: %q is not a float32", k, s)
+		err = fmt.Errorf("column %q: %.64q is not a float32", k, s)
 	}
 	keepFirst(errp, err)
 	return 0
