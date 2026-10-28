@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -198,7 +199,7 @@ func loadConfig(p string) Config {
 	}
 	validateConfig(c)
 	if c.AdaptiveAlert {
-		s, err := c.AdaptiveAlertTuning.Build(c.SLO.DegradedAvgMs)
+		s, err := c.AdaptiveAlertTuning.Build(int(math.Round(c.SLO.DegradedAvgMs)))
 		if err != nil {
 			log.Fatalf("config: adaptive_alert_tuning: %v", err)
 		}
@@ -407,7 +408,7 @@ func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
 		gate = alertgate.New(cfg.adaptive, func(ctx context.Context, pkg string, since time.Time) ([]string, error) {
 			return ch.StatusChangeMessages(ctx, pkg, since)
 		}, nil, log.Printf)
-		log.Printf("monitor: adaptive_alert ENABLED (base %.0fms, window %s, min issues %d)", cfg.adaptive.Base, cfg.adaptive.Window, cfg.adaptive.MinIssues)
+		log.Printf("monitor: adaptive_alert ENABLED (base %dms, window %s, min issues %d)", cfg.adaptive.Base, cfg.adaptive.Window, cfg.adaptive.MinIssues)
 	}
 
 	type pkgState struct {
@@ -491,8 +492,9 @@ func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
 // operational<->degraded only; the event write is unchanged. A failed event write is
 // kept sealed in events and retried (see eventLog).
 func fireTransition(ctx context.Context, events *eventLog, discord *http.Client, cfg Config, p slo.Status, prev string, gate *alertgate.Gate) {
-	log.Printf("status change %s: %s -> %s (response %.0fms)", p.Package, prev, p.Status, p.ResponseMsAvg)
-	msg := fmt.Sprintf(alertgate.MessageFormat, prev, p.Status, p.ResponseMsAvg, p.SuccessPct)
+	ms := int(math.Round(p.ResponseMsAvg))
+	log.Printf("status change %s: %s -> %s (response %dms)", p.Package, prev, p.Status, ms)
+	msg := fmt.Sprintf(alertgate.MessageFormat, prev, p.Status, ms, p.SuccessPct)
 	ev := model.Event{TS: time.Now().UTC(), Type: "status_change", Package: p.Package, Message: msg}
 	if err := events.add(ctx, ev); err != nil {
 		log.Printf("monitor: record event: %v (kept, retried next tick)", err)
@@ -500,12 +502,12 @@ func fireTransition(ctx context.Context, events *eventLog, discord *http.Client,
 	send, extra := true, ""
 	if gate != nil {
 		gctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		send, extra = gate.Transition(gctx, p.Package, prev, p.Status, p.ResponseMsAvg)
+		send, extra = gate.Transition(gctx, p.Package, prev, p.Status, float32(p.ResponseMsAvg))
 		cancel()
 	}
 	if cfg.Discord != "" && send {
 		emoji := map[string]string{"operational": "✅", "degraded": "⚠️", "down": "🔴", "no_data": "⚪"}[p.Status]
-		text := fmt.Sprintf("%s **%s**: `%s` → `%s` (response %.0fms)", emoji, p.Package, prev, p.Status, p.ResponseMsAvg)
+		text := fmt.Sprintf("%s **%s**: `%s` → `%s` (response %dms)", emoji, p.Package, prev, p.Status, ms)
 		if extra != "" {
 			text = extra // raise announcement replaces the plain alert (it carries the top readings)
 		}

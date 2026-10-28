@@ -7,7 +7,7 @@ import (
 	"github.com/flashproxy/flashproxy-status/internal/alertgate"
 )
 
-func msg(prev, st string) string { return fmt.Sprintf(alertgate.MessageFormat, prev, st, 12.0, 99.0) }
+func msg(prev, st string) string { return fmt.Sprintf(alertgate.MessageFormat, prev, st, 12, 99.0) }
 
 func TestSeedConfirmed(t *testing.T) {
 	cases := []struct {

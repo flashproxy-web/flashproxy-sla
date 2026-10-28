@@ -10,7 +10,7 @@ import (
 )
 
 // msg renders exactly what cmd/worker fireTransition writes to sla.events.
-func msg(prev, st string, ms float64) string {
+func msg(prev, st string, ms int) string {
 	return fmt.Sprintf(MessageFormat, prev, st, ms, 98.1)
 }
 
@@ -31,7 +31,7 @@ func newGate(t *testing.T, f *fake) *Gate {
 	return New(s, f.list, func() time.Time { return f.now }, nil)
 }
 
-func degraded(ms ...float64) []string {
+func degraded(ms ...int) []string {
 	var out []string
 	for _, v := range ms {
 		out = append(out, msg("operational", "degraded", v))
@@ -50,6 +50,13 @@ func TestParseMessageFrozenFormat(t *testing.T) {
 	if _, _, _, ok := ParseMessage("deploy v1.2"); ok {
 		t.Fatal("non-status message parsed")
 	}
+	// Old rows may carry a fractional response: rounded half away from zero.
+	for in, want := range map[string]int{"12": 12, "12.5": 13, "12.49": 12, "63.4": 63} {
+		m := "operational -> degraded (response " + in + "ms, 98.1% ok)"
+		if _, _, ms, ok := ParseMessage(m); !ok || ms != want {
+			t.Errorf("ParseMessage(%q) ms=%v ok=%v, want %v", m, ms, ok, want)
+		}
+	}
 }
 
 func TestStartupRowsNotCounted(t *testing.T) {
@@ -66,7 +73,7 @@ func TestRaiseOnFiveIssues(t *testing.T) {
 	if !send || extra == "" {
 		t.Fatalf("want raise announcement, got send=%v extra=%q", send, extra)
 	}
-	if got, want := g.Threshold("isp_eu"), 60*1.1; got != want { // 5th highest = 60
+	if got, want := g.Threshold("isp_eu"), 66; got != want { // 5th highest 60 x 1.1
 		t.Fatalf("T = %v, want %v", got, want)
 	}
 	if !strings.Contains(extra, "50→66ms") || !strings.Contains(extra, "top 80, 70, 65, 61, 60ms") {
@@ -99,22 +106,22 @@ func TestSingleOutlierAndFewIssuesDoNotRaise(t *testing.T) {
 	if send, extra := g.Transition(context.Background(), "p", "operational", "degraded", 500); !send || extra != "" {
 		t.Fatalf("want plain alert, got %v %q", send, extra)
 	}
-	f.msgs = degraded(500, 55, 54, 53, 51) // 5th highest 51 -> 56.1: the outlier does not drive T
+	f.msgs = degraded(500, 55, 54, 53, 51) // 5th highest 51 -> 56.1 -> 56: the outlier does not drive T
 	g.Transition(context.Background(), "p", "operational", "degraded", 51)
-	if got := g.Threshold("p"); got != 51*1.1 {
+	if got := g.Threshold("p"); got != 56 {
 		t.Fatalf("T = %v", got)
 	}
 }
 
 func TestLowerCheck(t *testing.T) {
 	s, _ := Options{}.Build(50)
-	if nt, ok := LowerTarget(s, 100, []float64{90, 90, 90, 90}); !ok || nt != 50 {
+	if nt, ok := LowerTarget(s, 100, []int{90, 90, 90, 90}); !ok || nt != 50 {
 		t.Fatalf("fewer than 5 -> base, got %v %v", nt, ok)
 	}
-	if nt, ok := LowerTarget(s, 200, []float64{300, 200, 100, 90, 60}); !ok || nt != 60*1.1 {
+	if nt, ok := LowerTarget(s, 200, []int{300, 200, 100, 90, 60}); !ok || nt != 66 {
 		t.Fatalf("ref <= 50%% of T -> ref*1.1, got %v %v", nt, ok)
 	}
-	if _, ok := LowerTarget(s, 100, []float64{100, 90, 80, 70, 60}); ok {
+	if _, ok := LowerTarget(s, 100, []int{100, 90, 80, 70, 60}); ok {
 		t.Fatal("ref > 50% of T should not change")
 	}
 
@@ -143,7 +150,7 @@ func TestQueryErrorFailsOpen(t *testing.T) {
 	if send, extra := g.Transition(context.Background(), "p", "operational", "degraded", 55); !send || extra != "" {
 		t.Fatalf("query error must fail open, got %v %q", send, extra)
 	}
-	if g.Threshold("p") != 60*1.1 {
+	if g.Threshold("p") != 66 {
 		t.Fatalf("T changed on error: %v", g.Threshold("p"))
 	}
 }
@@ -209,10 +216,9 @@ func TestDailyDue(t *testing.T) {
 	}
 }
 
-// The worker formats events with MessageFormat; pin it to the frozen ledger text
-// and to the parser.
+// The worker formats events with MessageFormat; pin the text and its round trip.
 func TestMessageFormatFrozen(t *testing.T) {
-	m := fmt.Sprintf(MessageFormat, "operational", "degraded", 63.4, 98.1)
+	m := fmt.Sprintf(MessageFormat, "operational", "degraded", 63, 98.1)
 	if m != "operational -> degraded (response 63ms, 98.1% ok)" {
 		t.Fatalf("message format changed: %q", m)
 	}
@@ -237,5 +243,96 @@ func TestOutageResetsState(t *testing.T) {
 	}
 	if p := g.pkgs["p"]; !p.nextCheck.IsZero() || !p.lastChange.IsZero() || p.dailyDay != "" {
 		t.Fatalf("state not cleared: %+v", p)
+	}
+}
+
+// A lower post names the open degraded episode (response, local start); a recovery
+// or an outage closes it.
+func TestLowerPostOpenEpisode(t *testing.T) {
+	cases := []struct {
+		name, tz string
+		t0       time.Time
+		then     string // "" | "recover" | "down"
+		want     string // suffix; "" = none
+	}{
+		{"open, UTC", "UTC", time.Date(2026, 10, 26, 6, 0, 0, 0, time.UTC), "", ", degraded (60ms) since 2026-10-26 06:00"},
+		{"open, Jerusalem crosses midnight", "Asia/Jerusalem", time.Date(2026, 10, 26, 22, 30, 0, 0, time.UTC), "", ", degraded (60ms) since 2026-10-27 00:30"},
+		{"open, Los Angeles crosses midnight", "America/Los_Angeles", time.Date(2026, 10, 27, 5, 30, 0, 0, time.UTC), "", ", degraded (60ms) since 2026-10-26 22:30"},
+		{"recovered before lowering", "UTC", time.Date(2026, 10, 26, 6, 0, 0, 0, time.UTC), "recover", ""},
+		{"down resets", "UTC", time.Date(2026, 10, 26, 6, 0, 0, 0, time.UTC), "down", ""},
+	}
+	for _, c := range cases {
+		s, err := Options{Timezone: c.tz}.Build(50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f := &fake{now: c.t0, msgs: degraded(60, 60, 60, 60, 60)}
+		g := New(s, f.list, func() time.Time { return f.now }, nil)
+		g.Transition(context.Background(), "p", "operational", "degraded", 60) // T = 66
+		switch c.then {
+		case "recover":
+			f.now = c.t0.Add(time.Hour)
+			g.Transition(context.Background(), "p", "degraded", "operational", 40)
+		case "down":
+			f.now = c.t0.Add(time.Hour)
+			g.Transition(context.Background(), "p", "degraded", "down", 0)
+		}
+		f.msgs = nil
+		f.now = c.t0.Add(3 * time.Hour) // before the 10:00 daily slot in every tz above
+		posts := g.Tick(context.Background())
+		if c.then == "down" {
+			// Reset: no lower post at all, and the episode is gone for any later post.
+			p := g.pkgs["p"]
+			if len(posts) != 0 || !p.lastEventAt.IsZero() || strings.Contains(g.summary("p", p, 66, nil), "degraded (") {
+				t.Errorf("%s: posts=%v state=%+v", c.name, posts, p)
+			}
+			continue
+		}
+		if len(posts) != 1 || !strings.Contains(posts[0].Text, "📉 **p** 66→50ms") {
+			t.Fatalf("%s: posts = %v", c.name, posts)
+		}
+		if c.want == "" {
+			if strings.Contains(posts[0].Text, "degraded (") {
+				t.Errorf("%s: unexpected suffix: %q", c.name, posts[0].Text)
+			}
+		} else if !strings.Contains(posts[0].Text, "66→50ms"+c.want+" · ") {
+			t.Errorf("%s: %q lacks %q", c.name, posts[0].Text, c.want)
+		}
+	}
+}
+
+// The gate compares the un-rounded reading: with T = 56, 56.4ms is above T and sent
+// (a rounded compare, 56 <= 56, suppressed it). The episode shows the rounded value.
+func TestDegradedComparesUnrounded(t *testing.T) {
+	cases := []struct {
+		ms    float32
+		shown int // rounded: the event message and the episode suffix
+		send  bool
+	}{
+		{56.4, 56, true},  // rounded compare suppressed this
+		{56.5, 57, true},  // sent either way
+		{56, 56, false},   // == T
+		{55.6, 56, false}, // suppressed either way
+	}
+	for _, c := range cases {
+		t0 := time.Date(2026, 10, 26, 6, 0, 0, 0, time.UTC) // 08:00/09:00 Jerusalem
+		f := &fake{now: t0, msgs: degraded(51, 51, 51, 51, 51)}
+		g := newGate(t, f)
+		g.Transition(context.Background(), "p", "operational", "degraded", 51) // 51 x 1.1 = 56.1 -> T = 56
+		g.Transition(context.Background(), "p", "degraded", "operational", 40)
+		if g.Threshold("p") != 56 {
+			t.Fatalf("T = %v, want 56", g.Threshold("p"))
+		}
+		f.msgs = append(f.msgs, msg("operational", "degraded", c.shown)) // this reading's event; 5th highest stays 51
+		send, extra := g.Transition(context.Background(), "p", "operational", "degraded", c.ms)
+		if send != c.send || extra != "" || g.Threshold("p") != 56 {
+			t.Errorf("ms=%v: send=%v extra=%q T=%v, want send=%v, no raise", c.ms, send, extra, g.Threshold("p"), c.send)
+		}
+		f.msgs = nil
+		f.now = t0.Add(3 * time.Hour)
+		posts := g.Tick(context.Background())
+		if want := fmt.Sprintf("56→50ms, degraded (%dms) since 2026-10-26 08:00 · ", c.shown); len(posts) != 1 || !strings.Contains(posts[0].Text, want) {
+			t.Errorf("ms=%v: posts = %v, want %q", c.ms, posts, want)
+		}
 	}
 }

@@ -40,7 +40,7 @@ type Options struct {
 
 // Settings are validated, defaulted Options plus the base (floor) threshold.
 type Settings struct {
-	Base        float64
+	Base        int
 	Window      time.Duration
 	MinIssues   int
 	TopN        int
@@ -54,7 +54,7 @@ type Settings struct {
 
 // Build applies defaults and validates. Negative or nonsensical values are errors
 // (the caller fails fast), zero means "use the default".
-func (o Options) Build(base float64) (Settings, error) {
+func (o Options) Build(base int) (Settings, error) {
 	if base <= 0 {
 		return Settings{}, fmt.Errorf("slo.degraded_avg_ms must be > 0 (it is the alert floor)")
 	}
@@ -115,16 +115,17 @@ func defF(v, d float64) float64 {
 	return v
 }
 
-// MessageFormat is the FROZEN sla.events status_change message the worker writes
-// (args: prev, status, response ms, success %). It is part of the ledger canonical
-// string, so it cannot change; the worker formats with it and msgRe parses it.
-const MessageFormat = "%s -> %s (response %.0fms, %.1f%% ok)"
+// MessageFormat is the sla.events status_change message the worker writes (args:
+// prev, status, response ms (int), success %). Stored messages are hashed into the
+// ledger as written and never rewritten; the text must stay parseable by msgRe.
+const MessageFormat = "%s -> %s (response %dms, %.1f%% ok)"
 
-// msgRe matches MessageFormat.
+// msgRe matches MessageFormat, and older rows with a fractional response.
 var msgRe = regexp.MustCompile(`^(\w+) -> (\w+) \(response (\d+(?:\.\d+)?)ms, [^%]*% ok\)$`)
 
 // ParseMessage extracts (prev, status, response ms) from a status_change message.
-func ParseMessage(msg string) (prev, status string, ms float64, ok bool) {
+// A fractional response is rounded half away from zero.
+func ParseMessage(msg string) (prev, status string, ms int, ok bool) {
 	m := msgRe.FindStringSubmatch(msg)
 	if m == nil {
 		return "", "", 0, false
@@ -133,13 +134,13 @@ func ParseMessage(msg string) (prev, status string, ms float64, ok bool) {
 	if err != nil {
 		return "", "", 0, false
 	}
-	return m[1], m[2], v, true
+	return m[1], m[2], int(math.Round(v)), true
 }
 
 // Readings returns the response times of the logged issues among msgs (new status
 // degraded, previous status not "startup"), sorted descending.
-func Readings(msgs []string) []float64 {
-	var out []float64
+func Readings(msgs []string) []int {
+	var out []int
 	for _, m := range msgs {
 		prev, st, ms, ok := ParseMessage(m)
 		if !ok || st != "degraded" || prev == "startup" {
@@ -147,7 +148,7 @@ func Readings(msgs []string) []float64 {
 		}
 		out = append(out, ms)
 	}
-	sort.Sort(sort.Reverse(sort.Float64Slice(out)))
+	sort.Sort(sort.Reverse(sort.IntSlice(out)))
 	return out
 }
 
@@ -161,12 +162,15 @@ type Post struct {
 }
 
 type pkgState struct {
-	t          float64   // alert threshold; 0 = base
+	t          int       // alert threshold; 0 = base
 	nextCheck  time.Time // zero = no lower-check timer
 	suppressed bool      // the current degraded notice was suppressed -> suppress its recovery too
 	lastChange time.Time // last raise/lower post; zero = none since T left base
 	dailyDay   string    // local date (YYYY-MM-DD) the daily summary was last sent
 	skipDay    string    // local date the last slot decided to skip the daily summary
+
+	lastEventAt time.Time // last operational -> degraded; zero = none open
+	lastEventMs int       // response ms of that transition
 }
 
 // Gate holds the per-package adaptive state.
@@ -199,14 +203,14 @@ func (g *Gate) st(pkg string) *pkgState {
 }
 
 // Threshold returns the package's current alert threshold.
-func (g *Gate) Threshold(pkg string) float64 { return g.st(pkg).t }
+func (g *Gate) Threshold(pkg string) int { return g.st(pkg).t }
 
 // Transition decides the Discord post for a confirmed status change. It returns
 // send=false to suppress the message, and a non-empty extra to send a raise
 // announcement (summary) that REPLACES the plain degraded alert. Only operational ->
 // degraded and degraded -> operational are gated; everything else returns (true, ""), and a transition to down/no_data also resets the package's adaptive state.
 // Call it AFTER the event has been written (the current issue must be in the lookup).
-func (g *Gate) Transition(ctx context.Context, pkg, prev, status string, ms float64) (send bool, extra string) {
+func (g *Gate) Transition(ctx context.Context, pkg, prev, status string, ms float32) (send bool, extra string) {
 	p := g.st(pkg)
 	switch {
 	case prev == "operational" && status == "degraded":
@@ -216,6 +220,7 @@ func (g *Gate) Transition(ctx context.Context, pkg, prev, status string, ms floa
 		// them all, not just the ones paired with a suppressed degraded alert.
 		send = !p.suppressed && p.t <= g.s.Base
 		p.suppressed = false
+		p.lastEventAt = time.Time{} // episode over
 		return send, ""
 	default:
 		// Any ungated transition sends as today; don't pair with an old suppression.
@@ -229,25 +234,27 @@ func (g *Gate) Transition(ctx context.Context, pkg, prev, status string, ms floa
 	}
 }
 
-func (g *Gate) onDegraded(ctx context.Context, pkg string, p *pkgState, ms float64) (bool, string) {
+func (g *Gate) onDegraded(ctx context.Context, pkg string, p *pkgState, ms float32) (bool, string) {
 	p.suppressed = false
 	now := g.now()
+	p.lastEventAt = now
+	p.lastEventMs = int(math.Round(float64(ms)))
 	msgs, err := g.list(ctx, pkg, now.Add(-g.s.Window))
 	if err != nil {
-		g.logf("alertgate %s: list issues failed (%v): failing open, threshold unchanged %.0fms", pkg, err, p.t)
+		g.logf("alertgate %s: list issues failed (%v): failing open, threshold unchanged %dms", pkg, err, p.t)
 		return true, ""
 	}
 	r := Readings(msgs)
 	if len(r) >= g.s.MinIssues {
-		if nt := r[g.s.MinIssues-1] * g.s.RaiseFactor; nt > p.t {
+		if nt := int(math.Round(float64(r[g.s.MinIssues-1]) * g.s.RaiseFactor)); nt > p.t {
 			old := p.t
 			g.change(pkg, p, nt, now, "raise")
-			return true, g.summary(pkg, old, nt, r, true)
+			return true, g.summary(pkg, p, old, r)
 		}
 	}
-	if p.t > g.s.Base && ms <= p.t {
+	if p.t > g.s.Base && ms <= float32(p.t) {
 		p.suppressed = true
-		g.logf("alertgate %s: degraded alert suppressed (response %.0fms <= threshold %.0fms)", pkg, ms, p.t)
+		g.logf("alertgate %s: degraded alert suppressed (response %dms <= threshold %dms)", pkg, p.lastEventMs, p.t)
 		return false, ""
 	}
 	return true, ""
@@ -258,8 +265,8 @@ func (g *Gate) reset(p *pkgState) {
 	*p = pkgState{t: g.s.Base}
 }
 
-func (g *Gate) change(pkg string, p *pkgState, nt float64, now time.Time, why string) {
-	g.logf("alertgate %s: threshold %s %.0fms -> %.0fms (base %.0fms)", pkg, why, p.t, nt, g.s.Base)
+func (g *Gate) change(pkg string, p *pkgState, nt int, now time.Time, why string) {
+	g.logf("alertgate %s: threshold %s %dms -> %dms (base %dms)", pkg, why, p.t, nt, g.s.Base)
 	p.t = nt
 	if nt > g.s.Base {
 		p.lastChange = now
@@ -304,14 +311,14 @@ func (g *Gate) Tick(ctx context.Context) []Post {
 			if nt, ok := LowerTarget(g.s, p.t, r); ok {
 				old := p.t
 				g.change(pkg, p, nt, now, "lower")
-				out = append(out, Post{pkg, g.summary(pkg, old, nt, r, true)})
+				out = append(out, Post{pkg, g.summary(pkg, p, old, r)})
 				continue
 			}
 			p.nextCheck = now.Add(g.s.Recheck)
 		}
 		if dailyDue {
 			p.dailyDay = now.In(g.s.Loc).Format("2006-01-02")
-			out = append(out, Post{pkg, g.summary(pkg, p.t, p.t, r, false)})
+			out = append(out, Post{pkg, g.summary(pkg, p, p.t, r)})
 		}
 	}
 	return out
@@ -319,13 +326,13 @@ func (g *Gate) Tick(ctx context.Context) []Post {
 
 // LowerTarget is the 3 h lower rule. readings must be sorted descending. It returns
 // the new threshold and true when T should change.
-func LowerTarget(s Settings, t float64, readings []float64) (float64, bool) {
+func LowerTarget(s Settings, t int, readings []int) (int, bool) {
 	if len(readings) < s.MinIssues {
 		return s.Base, t != s.Base
 	}
 	ref := readings[s.MinIssues-1]
-	if ref <= s.LowerRatio*t || ref <= s.Base {
-		nt := math.Max(s.Base, ref*s.RaiseFactor)
+	if float64(ref) <= s.LowerRatio*float64(t) || ref <= s.Base {
+		nt := max(s.Base, int(math.Round(float64(ref)*s.RaiseFactor)))
 		if nt < t {
 			return nt, true
 		}
@@ -364,16 +371,20 @@ func DailyDue(now time.Time, loc *time.Location, slots []int, gap time.Duration,
 	return true, false
 }
 
-func (g *Gate) summary(pkg string, old, nt float64, r []float64, changed bool) string {
+// summary renders a raise/lower post (old != p.t) or the daily post (old == p.t).
+func (g *Gate) summary(pkg string, p *pkgState, old int, r []int) string {
 	var b strings.Builder
-	if changed {
-		arrow := "📈"
-		if nt < old {
-			arrow = "📉"
+	if old != p.t {
+		if p.t < old {
+			fmt.Fprintf(&b, "📉 **%s** %d→%dms", pkg, old, p.t)
+			if !p.lastEventAt.IsZero() {
+				fmt.Fprintf(&b, ", degraded (%dms) since %s", p.lastEventMs, p.lastEventAt.In(g.s.Loc).Format("2006-01-02 15:04"))
+			}
+		} else {
+			fmt.Fprintf(&b, "📈 **%s** %d→%dms", pkg, old, p.t)
 		}
-		fmt.Fprintf(&b, "%s **%s** %.0f→%.0fms", arrow, pkg, old, nt)
 	} else {
-		fmt.Fprintf(&b, "📋 **%s** %.0fms", pkg, nt)
+		fmt.Fprintf(&b, "📋 **%s** %dms", pkg, p.t)
 	}
 	fmt.Fprintf(&b, " · %d in %s", len(r), fmtDur(g.s.Window))
 	if len(r) > 0 {
@@ -383,7 +394,7 @@ func (g *Gate) summary(pkg string, old, nt float64, r []float64, changed bool) s
 		}
 		parts := make([]string, len(top))
 		for i, v := range top {
-			parts[i] = fmt.Sprintf("%.0f", v)
+			parts[i] = strconv.Itoa(v)
 		}
 		fmt.Fprintf(&b, " · top %sms", strings.Join(parts, ", "))
 	}
