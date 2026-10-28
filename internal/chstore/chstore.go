@@ -194,7 +194,8 @@ func (c *Client) LedgerHead(ctx context.Context, stream string) (uint64, string,
 	if len(rows) == 0 {
 		return 0, "", nil
 	}
-	return uint64(Num(rows[0], "seq")), Str(rows[0], "entry_hash"), nil
+	seq := Uint[uint64](rows[0], "seq", &err)
+	return seq, Str(rows[0], "entry_hash"), err
 }
 
 // ProbeMaxSeq returns the highest seq already present in probe_raw for a stream, so
@@ -207,7 +208,8 @@ func (c *Client) ProbeMaxSeq(ctx context.Context, stream string) (uint64, error)
 	if err != nil || len(rows) == 0 {
 		return 0, err
 	}
-	return NumU64(rows[0], "s"), nil
+	s := Uint[uint64](rows[0], "s", &err)
+	return s, err
 }
 
 // LedgerHeads returns the current head (seq, entry_hash) of every stream — used by
@@ -233,7 +235,10 @@ func (c *Client) LedgerHeads(ctx context.Context) (map[string]struct {
 		out[Str(m, "stream")] = struct {
 			Seq       uint64
 			EntryHash string
-		}{NumU64(m, "head_seq"), Str(m, "entry_hash")}
+		}{Uint[uint64](m, "head_seq", &err), Str(m, "entry_hash")}
+	}
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
@@ -271,6 +276,8 @@ func (c *Client) LastStatusMessages(ctx context.Context) (map[string]string, err
 }
 
 // QueryJSON runs a SELECT and returns the rows of the ClickHouse JSON format.
+// Numbers are kept as json.Number (never float64), so integer columns decode
+// exactly via Uint/Int; ClickHouse renders (U)Int64 as JSON strings instead.
 // No client-set settings are sent: reader users are readonly=1, so query caps and
 // cancel_http_readonly_queries_on_client_close are configured server-side on the
 // reader profiles instead (see schema/roles.sql).
@@ -282,7 +289,9 @@ func (c *Client) QueryJSON(ctx context.Context, sql string) ([]map[string]any, e
 	var out struct {
 		Data []map[string]any `json:"data"`
 	}
-	if err := json.Unmarshal(b, &out); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode clickhouse json: %w", err)
 	}
 	return out.Data, nil
@@ -294,13 +303,14 @@ func escapeLit(s string) string {
 	return strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `'`, `\'`)
 }
 
-// Num extracts a float from a ClickHouse JSON value (number, or numeric string —
-// 64-bit ints come back as strings to preserve precision). NOTE: do not use for
-// UInt64 totals that may exceed 2^53; use NumU64 instead.
+// Num extracts a float from a ClickHouse JSON value (number, or numeric string).
+// Lenient (malformed -> 0): only for display values such as round(avg(x), 1).
+// Integer columns use Uint/Int, which are exact and range-checked.
 func Num(m map[string]any, k string) float64 {
 	switch v := m[k].(type) {
-	case float64:
-		return v
+	case json.Number:
+		x, _ := v.Float64()
+		return x
 	case string:
 		x, _ := strconv.ParseFloat(v, 64)
 		return x
@@ -308,17 +318,80 @@ func Num(m map[string]any, k string) float64 {
 	return 0
 }
 
-// NumU64 extracts a uint64 without float precision loss (ClickHouse renders UInt64
-// as a JSON string for exactly this reason).
-func NumU64(m map[string]any, k string) uint64 {
-	switch v := m[k].(type) {
-	case string:
-		x, _ := strconv.ParseUint(v, 10, 64)
-		return x
-	case float64:
-		return uint64(v)
+type unsigned interface {
+	~uint8 | ~uint16 | ~uint32 | ~uint64
+}
+type signed interface {
+	~int8 | ~int16 | ~int32 | ~int64
+}
+
+// Uint decodes integer column k exactly into T: the value must be a base-10
+// integer (JSON number or, for UInt64, JSON string) that fits T. On failure it
+// returns 0 and stores the error in *errp unless *errp already holds one, so a
+// caller can decode a whole row and check a single error.
+func Uint[T unsigned](m map[string]any, k string, errp *error) T {
+	s, err := numText(m, k)
+	if err == nil {
+		x, perr := strconv.ParseUint(s, 10, 64)
+		if v := T(x); perr == nil && uint64(v) == x {
+			return v
+		}
+		err = fmt.Errorf("column %q: %q is not a %T", k, s, T(0))
 	}
+	keepFirst(errp, err)
 	return 0
+}
+
+// Int is Uint for signed integer columns.
+func Int[T signed](m map[string]any, k string, errp *error) T {
+	s, err := numText(m, k)
+	if err == nil {
+		x, perr := strconv.ParseInt(s, 10, 64)
+		if v := T(x); perr == nil && int64(v) == x {
+			return v
+		}
+		err = fmt.Errorf("column %q: %q is not a %T", k, s, T(0))
+	}
+	keepFirst(errp, err)
+	return 0
+}
+
+// Float32 decodes a Float32 column, rounding the text straight to float32 (no
+// float64 detour). Error handling as Uint.
+func Float32(m map[string]any, k string, errp *error) float32 {
+	s, err := numText(m, k)
+	if err == nil {
+		x, perr := strconv.ParseFloat(s, 32)
+		if perr == nil {
+			return float32(x)
+		}
+		err = fmt.Errorf("column %q: %q is not a float32", k, s)
+	}
+	keepFirst(errp, err)
+	return 0
+}
+
+// numText returns the literal text of a numeric column.
+func numText(m map[string]any, k string) (string, error) {
+	switch v := m[k].(type) {
+	case json.Number:
+		return string(v), nil
+	case string:
+		return v, nil
+	case nil:
+		if _, ok := m[k]; !ok {
+			return "", fmt.Errorf("column %q missing", k)
+		}
+		return "", fmt.Errorf("column %q is null", k)
+	default:
+		return "", fmt.Errorf("column %q: unexpected %T", k, v)
+	}
+}
+
+func keepFirst(errp *error, err error) {
+	if *errp == nil {
+		*errp = err
+	}
 }
 
 // Str extracts a string from a ClickHouse JSON value.

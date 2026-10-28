@@ -215,10 +215,13 @@ func (s *chSource) checkpoints(ctx context.Context) ([]ledger.Checkpoint, error)
 	out := make([]ledger.Checkpoint, 0, len(rows))
 	for _, m := range rows {
 		out = append(out, ledger.Checkpoint{
-			Stream: chstore.Str(m, "stream"), Seq: chstore.NumU64(m, "seq"),
-			EntryHash: chstore.Str(m, "entry_hash"), TS: int64(chstore.Num(m, "ts")),
+			Stream: chstore.Str(m, "stream"), Seq: chstore.Uint[uint64](m, "seq", &err),
+			EntryHash: chstore.Str(m, "entry_hash"), TS: int64(chstore.Uint[uint32](m, "ts", &err)),
 			PubKeyID: chstore.Str(m, "pubkey_id"), Signature: chstore.Str(m, "signature"),
 		})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("decode checkpoint: %w", err)
 	}
 	return out, nil
 }
@@ -283,11 +286,14 @@ func (s *chSource) ledgerPage(ctx context.Context, stream string, from uint64, l
 	out := make([]ledger.Entry, 0, len(rows))
 	for _, m := range rows {
 		out = append(out, ledger.Entry{
-			Stream: chstore.Str(m, "stream"), Seq: chstore.NumU64(m, "seq"), Kind: chstore.Str(m, "kind"),
-			TSFirst: int64(chstore.Num(m, "ts_first")), TSLast: int64(chstore.Num(m, "ts_last")),
-			RowCount:  uint32(chstore.NumU64(m, "row_count")),
+			Stream: chstore.Str(m, "stream"), Seq: chstore.Uint[uint64](m, "seq", &err), Kind: chstore.Str(m, "kind"),
+			TSFirst: chstore.Int[int64](m, "ts_first", &err), TSLast: chstore.Int[int64](m, "ts_last", &err),
+			RowCount:  chstore.Uint[uint32](m, "row_count", &err),
 			BatchHash: chstore.Str(m, "batch_hash"), PrevHash: chstore.Str(m, "prev_hash"), EntryHash: chstore.Str(m, "entry_hash"),
 		})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("decode ledger entry: %w", err)
 	}
 	return out, nil
 }
@@ -306,10 +312,13 @@ func (s *chSource) rowPage(ctx context.Context, stream string, from, head uint64
 		out := make([]seqRow, 0, len(rows))
 		for _, m := range rows {
 			e := model.Event{
-				TS:   time.Unix(int64(chstore.Num(m, "ts")), 0).UTC(),
+				TS:   time.Unix(chstore.Int[int64](m, "ts", &err), 0).UTC(),
 				Type: chstore.Str(m, "type"), Package: chstore.Str(m, "package"), Message: chstore.Str(m, "message"),
 			}
-			out = append(out, seqRow{Seq: chstore.NumU64(m, "seq"), Canon: e.Canonical()})
+			out = append(out, seqRow{Seq: chstore.Uint[uint64](m, "seq", &err), Canon: e.Canonical()})
+		}
+		if err != nil {
+			return nil, fmt.Errorf("decode event row: %w", err)
 		}
 		return out, nil
 	}
@@ -326,16 +335,19 @@ func (s *chSource) rowPage(ctx context.Context, stream string, from, head uint64
 	out := make([]seqRow, 0, len(rows))
 	for _, m := range rows {
 		r := model.ProbeResult{
-			TS:      time.Unix(int64(chstore.Num(m, "ts")), 0).UTC(),
+			TS:      time.Unix(chstore.Int[int64](m, "ts", &err), 0).UTC(),
 			Vantage: chstore.Str(m, "vantage"), Package: chstore.Str(m, "package"), Scenario: chstore.Str(m, "scenario"),
 			Proto: chstore.Str(m, "proto"), Target: chstore.Str(m, "target"),
-			IPVersion: uint8(chstore.Num(m, "ip_version")), Success: uint8(chstore.Num(m, "success")),
+			IPVersion: chstore.Uint[uint8](m, "ip_version", &err), Success: chstore.Uint[uint8](m, "success", &err),
 			ErrorType: chstore.Str(m, "error_type"),
-			DialMS:    uint32(chstore.Num(m, "dial_ms")), ConnectMS: uint32(chstore.Num(m, "connect_ms")),
-			TTFBMS: uint32(chstore.Num(m, "ttfb_ms")), TotalMS: uint32(chstore.Num(m, "total_ms")),
-			Bytes: chstore.NumU64(m, "bytes"), ThroughputMbps: float32(chstore.Num(m, "throughput_mbps")),
+			DialMS:    chstore.Uint[uint32](m, "dial_ms", &err), ConnectMS: chstore.Uint[uint32](m, "connect_ms", &err),
+			TTFBMS: chstore.Uint[uint32](m, "ttfb_ms", &err), TotalMS: chstore.Uint[uint32](m, "total_ms", &err),
+			Bytes: chstore.Uint[uint64](m, "bytes", &err), ThroughputMbps: chstore.Float32(m, "throughput_mbps", &err),
 		}
-		out = append(out, seqRow{Seq: chstore.NumU64(m, "seq"), Canon: r.Canonical()})
+		out = append(out, seqRow{Seq: chstore.Uint[uint64](m, "seq", &err), Canon: r.Canonical()})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("decode probe row: %w", err)
 	}
 	return out, nil
 }

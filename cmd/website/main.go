@@ -648,12 +648,16 @@ func (s *server) loadStatements(ctx context.Context) []statementRow {
 	for _, m := range rows {
 		out = append(out, statementRow{
 			pkg:    chstore.Str(m, "package"),
-			start:  int64(chstore.Num(m, "pstart")),
-			end:    int64(chstore.Num(m, "pend")),
+			start:  int64(chstore.Uint[uint32](m, "pstart", &err)),
+			end:    int64(chstore.Uint[uint32](m, "pend", &err)),
 			body:   chstore.Str(m, "body"),
 			author: chstore.Str(m, "author"),
-			pub:    int64(chstore.Num(m, "pub")),
+			pub:    int64(chstore.Uint[uint32](m, "pub", &err)),
 		})
+	}
+	if err != nil {
+		log.Printf("incident statements (non-fatal): %v", err)
+		return nil
 	}
 	return out
 }
