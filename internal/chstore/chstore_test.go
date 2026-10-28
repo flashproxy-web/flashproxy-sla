@@ -3,6 +3,7 @@ package chstore
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -206,10 +207,17 @@ func TestQueryJSONExceptionKey(t *testing.T) {
 	if err == nil || strings.ContainsRune(err.Error(), '\n') || !strings.Contains(err.Error(), `\n`) || !strings.Contains(err.Error(), `\x`) {
 		t.Errorf("exception text not quoted: %q", err)
 	}
-	var e error
-	Uint[uint32](row(t, `{"v":"`+strings.Repeat("9", 5000)+`"}`), "v", &e)
-	if e == nil || len(e.Error()) > 150 {
-		t.Errorf("accessor error not bounded: %d bytes", len(e.Error()))
+	m := row(t, `{"v":"`+strings.Repeat("9", 5000)+`x"}`)
+	for name, decode := range map[string]func(*error){
+		"Uint":    func(e *error) { Uint[uint32](m, "v", e) },
+		"Int64":   func(e *error) { Int64(m, "v", e) },
+		"Float64": func(e *error) { Float64(m, "v", e) },
+		"Float32": func(e *error) { Float32(m, "v", e) },
+	} {
+		var e error
+		if decode(&e); e == nil || len(e.Error()) > 150 {
+			t.Errorf("%s: accessor error missing or not bounded: %v", name, len(fmt.Sprint(e)))
+		}
 	}
 }
 
