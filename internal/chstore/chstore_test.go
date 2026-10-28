@@ -105,6 +105,11 @@ func TestIntegerAccessors(t *testing.T) {
 		{"float32 from word", func(e *error) any { return Float32(m, "word", e) }},
 		{"float32 missing", func(e *error) any { return Float32(m, "nope", e) }},
 		{"float32 null", func(e *error) any { return Float32(m, "null", e) }},
+		{"float64 null", func(e *error) any { return Float64(m, "null", e) }},
+		{"float64 missing", func(e *error) any { return Float64(m, "nope", e) }},
+		{"float64 word", func(e *error) any { return Float64(m, "word", e) }},
+		{"float64 empty", func(e *error) any { return Float64(m, "empty", e) }},
+		{"float64 bool", func(e *error) any { return Float64(m, "bool", e) }},
 	}
 	for _, c := range bad {
 		var err error
@@ -175,5 +180,22 @@ func TestQueryJSONExceptionKey(t *testing.T) {
 	Uint[uint32](row(t, `{"v":"`+strings.Repeat("9", 5000)+`"}`), "v", &e)
 	if e == nil || len(e.Error()) > 150 {
 		t.Errorf("accessor error not bounded: %d bytes", len(e.Error()))
+	}
+}
+
+func TestFloat64Strict(t *testing.T) {
+	m := row(t, `{"n":99.5,"s":"71.3","z":0,"e":"1e3","neg":-2.5,
+		"nan":"nan","NaN":"NaN","inf":"inf","minf":"-Infinity","hex":"0x1p3","us":"1_000","over":"1e400","sp":" 1"}`)
+	var err error
+	for k, want := range map[string]float64{"n": 99.5, "s": 71.3, "z": 0, "e": 1000, "neg": -2.5} {
+		if got := Float64(m, k, &err); got != want || err != nil {
+			t.Errorf("%s: got %v, %v; want %v", k, got, err, want)
+		}
+	}
+	for _, k := range []string{"nan", "NaN", "inf", "minf", "hex", "us", "over", "sp"} {
+		var err error
+		if got := Float64(m, k, &err); err == nil || got != 0 {
+			t.Errorf("%s: got %v, err %v; want 0 and an error", k, got, err)
+		}
 	}
 }

@@ -247,8 +247,8 @@ func fetchMinutes(ctx context.Context, ch *chstore.Client, db string, windowMin 
 		}
 		t := int64(chstore.Uint[uint32](m, "t", &err))
 		out[pkg][van][t] = Minute{
-			T: t, ResponseMsAvg: chstore.Num(m, "response_ms_avg"),
-			SuccessPct: chstore.Num(m, "success_pct"), Samples: float64(chstore.Uint[uint32](m, "samples", &err)),
+			T: t, ResponseMsAvg: chstore.Float64(m, "response_ms_avg", &err),
+			SuccessPct: chstore.Float64(m, "success_pct", &err), Samples: float64(chstore.Uint[uint32](m, "samples", &err)),
 		}
 	}
 	if err != nil {

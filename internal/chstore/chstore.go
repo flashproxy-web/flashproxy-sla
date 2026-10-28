@@ -316,8 +316,8 @@ func escapeLit(s string) string {
 }
 
 // Num extracts a float from a ClickHouse JSON value (number, or numeric string).
-// Lenient (malformed -> 0): only for display values such as round(avg(x), 1).
-// Integer columns use Uint/Int64, which are exact and range-checked.
+// Lenient (malformed -> 0): only for display values that never feed a verdict,
+// alert or credit; those use Float64. Integer columns use Uint/Int64.
 func Num(m map[string]any, k string) float64 {
 	switch v := m[k].(type) {
 	case json.Number:
@@ -368,13 +368,24 @@ func Int64(m map[string]any, k string, errp *error) int64 {
 // Float32 decodes a Float32 column, rounding the text straight to float32 (no
 // float64 detour). Error handling as Uint.
 func Float32(m map[string]any, k string, errp *error) float32 {
+	return float32(parseFloat(m, k, 32, errp))
+}
+
+// Float64 decodes a Float64 column strictly, for values that feed a verdict.
+func Float64(m map[string]any, k string, errp *error) float64 {
+	return parseFloat(m, k, 64, errp)
+}
+
+// parseFloat accepts only finite decimal numbers: strconv.ParseFloat also takes
+// inf/nan, hex and underscore forms, and returns an error on overflow.
+func parseFloat(m map[string]any, k string, bitSize int, errp *error) float64 {
 	s, err := numText(m, k)
 	if err == nil {
-		x, perr := strconv.ParseFloat(s, 32)
-		if perr == nil {
-			return float32(x)
+		x, perr := strconv.ParseFloat(s, bitSize)
+		if perr == nil && strings.TrimLeft(s, "0123456789+-.eE") == "" {
+			return x
 		}
-		err = fmt.Errorf("column %q: %.64q is not a float32", k, s)
+		err = fmt.Errorf("column %q: %.64q is not a float%d", k, s, bitSize)
 	}
 	keepFirst(errp, err)
 	return 0

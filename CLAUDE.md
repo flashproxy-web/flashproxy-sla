@@ -161,7 +161,7 @@ Shared `internal/` packages:
   the **server** being UTC, not a per-query `session_timezone`. Bounds response size, returns
   errors (no silent truncation). `QueryJSON` decodes numbers as `json.Number` (never float64);
   integer columns are read with the exact, range-checked `Uint[T]`/`Int64` (JSON number, or
-  JSON string for 64-bit), `Float32` for Float32, lenient `Num` only for display floats.
+  JSON string for 64-bit), strict `Float64`/`Float32` for floats, lenient `Num` only for display floats.
   Inserts (writer role, not readonly) take a dedup token.
 - **`internal/model`** — `ProbeResult` + `Event` and their **frozen `Canonical()`**
   serialization (the byte-exact form the ledger hashes and `cmd/verify` reproduces). Changing
@@ -212,8 +212,10 @@ and website users read statements with no grant change.
   `session_timezone` (or any setting) on reads — reader users are `readonly=1` and reject it.
 - **Numeric helpers:** read every integer column with `chstore.Uint[T]`/`Int64` sized to
   the column (they error on missing/malformed/out-of-range, first error kept in `*errp`);
-  `cmd/verify` must return that error (fail closed). `Num` is only for fractional display
-  values (`round(avg(..),1)`); never narrow `Num` into an integer type.
+  `cmd/verify` must return that error (fail closed). Floats that feed a verdict, alert or
+  credit (slo `response_ms_avg`/`success_pct`) use strict `Float64`/`Float32`. Lenient `Num`
+  (malformed -> 0) is only for pure display values (website `/api/series`); never narrow
+  `Num` into an integer type.
 - **Probe volume is a cost line, not just a knob.** Every payload byte is billed AWS egress —
   the `streaming` scenario alone (proxy + `_direct`, every vantage) once ran at its 5 MB /120s
   default and was ~90% of a data-transfer bill that was ~83% of total AWS spend. Prod pins
