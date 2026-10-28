@@ -12,7 +12,7 @@ the status page can be reproduced by anyone. See `README.md` for the product fra
 the public DB credentials.
 
 Note the naming split: the Go module is `github.com/flashproxy/flashproxy-status`, but the
-published source URL referenced in code/docs is `github.com/thealonlevi/flashproxy-sla`.
+published source URL referenced in code/docs is `github.com/flashproxy-web/flashproxy-sla`.
 
 ## Build, test, run
 
@@ -86,9 +86,12 @@ Three binaries, strictly separated by what they touch:
   **`"adaptive_alert": true`** (default off; `internal/alertgate`) adds an *alert-only*
   per-package Discord threshold T for `operational <-> degraded` only: after the event is
   written, `fireTransition` asks the gate, which reads the package's `status_change` rows of
-  the last 3 h from `sla.events` (parsing the frozen message `"<prev> -> degraded (response
-  Nms, X% ok)"`, `startup` rows excluded). With >= 5 issues, T rises to 5th-highest x 1.1 and
-  a one-line raise announcement (old→new, count, top readings) replaces the alert; below T alerts are suppressed, and while T > base every `degraded -> operational` recovery is suppressed too. A 3 h recheck from each change lowers T; while T > base a once-a-day summary
+  the last 3 h from `sla.events` (parsing the message `"<prev> -> degraded (response
+  Nms, X% ok)"`, `startup` rows excluded; N is an integer in new rows, old rows may hold
+  decimals and parse rounded; stored messages are hashed as written and never rewritten).
+  All gate ms values are `int`; the one exception is the incoming reading, passed as an
+  unrounded `float32` so the `<= T` suppression check is not decided by rounding. With >= 5 issues, T rises to 5th-highest x 1.1 and
+  a one-line raise announcement (old→new, count, top readings) replaces the alert; below T alerts are suppressed, and while T > base every `degraded -> operational` recovery is suppressed too. A 3 h recheck from each change lowers T (if the package is still in an open degraded episode, the 📉 post appends `, degraded (<ms>ms) since <date time>`; the episode start and its first reading are kept per package in memory, set on `operational -> degraded` and cleared on recovery or reset); while T > base a once-a-day summary
   goes out per package (10:00; 16:00 instead if a raise/lower was already posted that day and the last one is >= 3 h old, else skipped; Asia/Jerusalem). The daily state resets when T returns to base. A transition to `down`/`no_data` also resets the package's adaptive state. Issue counting is deliberately broader than the gate: every `* -> degraded` row (except from `startup`) counts, but only `operational <-> degraded` is gated. If the event write fails (only logged), the lookup misses the current issue, so that one decision counts one short; this fails safe. State is in memory (restart = base, no startup post; the next degraded event with >= 5 issues still in the window raises T again and announces it);
   a query error fails open. Events, ledger, website and SLA still use `slo.degraded_avg_ms`.
   Tunables: `adaptive_alert_tuning` (see `config/worker.example.json`).

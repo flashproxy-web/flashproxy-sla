@@ -777,7 +777,7 @@ func (s *server) handleLLMs(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "\n## What is measured\n\nPer product, per vantage: average round-trip response time (the time the proxy takes to establish the upstream connection), gateway network round-trip (TCP connect RTT), throughput (streaming and large-object), high-frequency small-payload setup, broad scraping reachability, long-session stability, and a direct (no-proxy) baseline for comparison.\n\n")
 	fmt.Fprintf(w, "## Integrity\n\nEvery measurement is committed to a public, append-only, Ed25519-signed hash-chained ledger, so anyone can verify the data has not been tampered with.\n\n")
 	fmt.Fprintf(w, "## SLA\n\nFlashProxy backs these products with a 100%% uptime guarantee and automatic, proportional compensation. Full terms: %s/sla\n\n", s.cfg.SiteURL)
-	fmt.Fprintf(w, "## Source\n\nThis status page is open source and fully reproducible: %s — and the metrics database is publicly readable.\n", "https://github.com/thealonlevi/flashproxy-sla")
+	fmt.Fprintf(w, "## Source\n\nThis status page is open source and fully reproducible: %s — and the metrics database is publicly readable.\n", "https://github.com/flashproxy-web/flashproxy-sla")
 }
 
 func noCache(h http.Handler) http.Handler {
