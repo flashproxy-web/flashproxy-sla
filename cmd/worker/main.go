@@ -434,7 +434,7 @@ func monitorLoop(ctx context.Context, cfg Config, ch *chstore.Client) {
 			}
 		}
 		qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		rows, err := slo.Fetch(qctx, ch, cfg.ClickHouse.DB, cfg.SLO)
+		rows, err := slo.Fetch(qctx, ch, cfg.ClickHouse.DB, cfg.SLO, true)
 		cancel()
 		if err != nil {
 			log.Printf("monitor: %v", err)

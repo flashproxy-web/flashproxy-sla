@@ -1,6 +1,9 @@
 package slo
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 var testSLO = SLO{DegradedAvgMs: 50, DegradedForMin: 5, DownSuccessPct: 90, StaleSeconds: 120}
 
@@ -252,5 +255,39 @@ func TestIncidentsFromBars(t *testing.T) {
 	split := IncidentsFromBars("x", []Bar{b(0, "down"), b(60, "degraded")})
 	if len(split) != 2 || split[0].Type != "down" || split[1].Type != "degraded" {
 		t.Errorf("adjacent down->degraded must split: %+v", split)
+	}
+}
+
+// TestMonitorIgnoresFillingMinute reproduces the isp-eu alert of 2026-10-27 21:56:17
+// ("degraded -> operational (response 117ms)"): the newest minute held only the slow
+// cross-region vantage's first row (117ms), the fast home vantages' rows had not
+// landed yet. The monitor's headline must come from a settled minute, not 117.
+func TestMonitorIgnoresFillingMinute(t *testing.T) {
+	t0 := int64(1_700_000_000)
+	t0 -= t0 % 60 // start of the minute still filling
+	data := map[string]map[string]map[int64]Minute{"isp-eu": {"us": {}, "eu": {}}}
+	for i := int64(1); i <= 10; i++ {
+		m := t0 - i*60
+		data["isp-eu"]["us"][m] = Minute{T: m, ResponseMsAvg: 135, SuccessPct: 100, Samples: 3}
+		data["isp-eu"]["eu"][m] = Minute{T: m, ResponseMsAvg: 65, SuccessPct: 100, Samples: 3}
+	}
+	data["isp-eu"]["eu"][t0-60] = Minute{T: t0 - 60, ResponseMsAvg: 46, SuccessPct: 100, Samples: 3}
+	data["isp-eu"]["us"][t0] = Minute{T: t0, ResponseMsAvg: 117, SuccessPct: 100, Samples: 1} // only row so far
+
+	// /api/status keeps reading the newest minute (unchanged behaviour).
+	if got := statuses(data, time.Unix(t0+17, 0), 10, testSLO, false)[0]; got.ResponseMsAvg != 117 {
+		t.Fatalf("complete=false: got %vms, want 117 (unchanged)", got.ResponseMsAvg)
+	}
+	// Monitor reads the newest minute closed >= 30s ago, via the fast home vantage:
+	// 17s into the filling minute -> t0-120 (65ms); 5s after t0 closed -> t0-60 (46ms).
+	for _, c := range []struct {
+		now    int64
+		status string
+		ms     float64
+	}{{t0 + 17, "degraded", 65}, {t0 + 65, "operational", 46}} {
+		got := statuses(data, time.Unix(c.now, 0), 10, testSLO, true)[0]
+		if got.ResponseMsAvg != c.ms || got.Vantage != "eu" || got.Status != c.status {
+			t.Fatalf("now=t0+%ds: got %s %vms via %q, want %s %vms via eu", c.now-t0, got.Status, got.ResponseMsAvg, got.Vantage, c.status, c.ms)
+		}
 	}
 }

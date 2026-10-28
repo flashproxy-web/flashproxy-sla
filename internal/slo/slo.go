@@ -473,21 +473,37 @@ func RollupIncidents(ctx context.Context, ch *chstore.Client, db string, windowM
 }
 
 // Fetch returns the current cross-vantage status per package (Down only when ALL
-// vantages are down). Used by the monitor.
-func Fetch(ctx context.Context, ch *chstore.Client, db string, s SLO) ([]Status, error) {
-	prs, err := RollupPackages(ctx, ch, db, s.withDefaults().DegradedForMin+5, s)
+// vantages are down). Used by /api/status (complete=false) and the monitor
+// (complete=true, see statuses).
+func Fetch(ctx context.Context, ch *chstore.Client, db string, s SLO, complete bool) ([]Status, error) {
+	w := s.withDefaults().DegradedForMin + 5
+	data, err := fetchMinutes(ctx, ch, db, w)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Status, 0, len(prs))
-	for _, pr := range prs {
+	return statuses(data, time.Now(), w, s, complete), nil
+}
+
+// statuses reduces fetched minutes to one Status per package, as RollupPackages does.
+// complete=true (monitor) evaluates as of 90s ago, i.e. at the newest minute that closed
+// >= 30s ago: a minute still filling (rows land seconds late) can hold only a slow
+// cross-region vantage and misreport the best-vantage response. The grid shrinks by 2
+// so it stays inside the fetched window.
+func statuses(data map[string]map[string]map[int64]Minute, now time.Time, windowMin int, s SLO, complete bool) []Status {
+	if complete {
+		now, windowMin = now.Add(-90*time.Second), windowMin-2
+	}
+	grid := Grid(now, windowMin)
+	out := make([]Status, 0, len(data))
+	for _, pkg := range sortedKeys(data) {
+		pr := rollupPackageSeries(data[pkg], grid, now.Unix(), s)
 		out = append(out, Status{
-			Package: pr.Package, Vantage: pr.BestVantage, Status: pr.Status,
+			Package: pkg, Vantage: pr.BestVantage, Status: pr.Status,
 			ResponseMsAvg: pr.ResponseMsAvg, SuccessPct: pr.SuccessPct,
 			Samples: pr.Samples, AgeSeconds: pr.AgeSeconds,
 		})
 	}
-	return out, nil
+	return out
 }
 
 func sortedKeys[V any](m map[string]V) []string {

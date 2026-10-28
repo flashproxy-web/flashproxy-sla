@@ -177,7 +177,7 @@ func (s *server) fail(w http.ResponseWriter, where string, err error) {
 }
 
 func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	rows, err := slo.Fetch(r.Context(), s.ch, s.cfg.ClickHouse.DB, s.cfg.SLO)
+	rows, err := slo.Fetch(r.Context(), s.ch, s.cfg.ClickHouse.DB, s.cfg.SLO, false)
 	if err != nil {
 		s.fail(w, "status query", err)
 		return
