@@ -277,7 +277,7 @@ func (c *Client) LastStatusMessages(ctx context.Context) (map[string]string, err
 
 // QueryJSON runs a SELECT and returns the rows of the ClickHouse JSON format.
 // Numbers are kept as json.Number (never float64), so integer columns decode
-// exactly via Uint/Int; ClickHouse renders (U)Int64 as JSON strings instead.
+// exactly via Uint/Int64 ((U)Int64 may also arrive as JSON strings).
 // No client-set settings are sent: reader users are readonly=1, so query caps and
 // cancel_http_readonly_queries_on_client_close are configured server-side on the
 // reader profiles instead (see schema/roles.sql).
@@ -317,7 +317,7 @@ func escapeLit(s string) string {
 
 // Num extracts a float from a ClickHouse JSON value (number, or numeric string).
 // Lenient (malformed -> 0): only for display values such as round(avg(x), 1).
-// Integer columns use Uint/Int, which are exact and range-checked.
+// Integer columns use Uint/Int64, which are exact and range-checked.
 func Num(m map[string]any, k string) float64 {
 	switch v := m[k].(type) {
 	case json.Number:
@@ -331,10 +331,7 @@ func Num(m map[string]any, k string) float64 {
 }
 
 type unsigned interface {
-	~uint8 | ~uint16 | ~uint32 | ~uint64
-}
-type signed interface {
-	~int8 | ~int16 | ~int32 | ~int64
+	~uint8 | ~uint32 | ~uint64
 }
 
 // Uint decodes integer column k exactly into T: the value must be a base-10
@@ -354,15 +351,15 @@ func Uint[T unsigned](m map[string]any, k string, errp *error) T {
 	return 0
 }
 
-// Int is Uint for signed integer columns.
-func Int[T signed](m map[string]any, k string, errp *error) T {
+// Int64 is Uint for an Int64 column.
+func Int64(m map[string]any, k string, errp *error) int64 {
 	s, err := numText(m, k)
 	if err == nil {
 		x, perr := strconv.ParseInt(s, 10, 64)
-		if v := T(x); perr == nil && int64(v) == x {
-			return v
+		if perr == nil {
+			return x
 		}
-		err = fmt.Errorf("column %q: %q is not a %T", k, s, T(0))
+		err = fmt.Errorf("column %q: %q is not an int64", k, s)
 	}
 	keepFirst(errp, err)
 	return 0

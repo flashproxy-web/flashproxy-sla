@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -74,9 +75,9 @@ func TestIntegerAccessors(t *testing.T) {
 	ok("UInt32 string max", Uint[uint32](m, "u32s", &err), uint32(4294967295), err)
 	ok("UInt64 string max", Uint[uint64](m, "u64s", &err), uint64(18446744073709551615), err)
 	ok("UInt64 > 2^53 exact", Uint[uint64](m, "u64big", &err), uint64(9007199254740993), err)
-	ok("Int64 number min", Int[int64](m, "i64n", &err), int64(-9223372036854775808), err)
-	ok("Int64 string max", Int[int64](m, "i64s", &err), int64(9223372036854775807), err)
-	ok("Int64 negative string", Int[int64](m, "negs", &err), int64(-1), err)
+	ok("Int64 number min", Int64(m, "i64n", &err), int64(-9223372036854775808), err)
+	ok("Int64 string max", Int64(m, "i64s", &err), int64(9223372036854775807), err)
+	ok("Int64 negative string", Int64(m, "negs", &err), int64(-1), err)
 	ok("UInt8 max", Uint[uint8](m, "u8", &err), uint8(255), err)
 	ok("zero", Uint[uint32](m, "zero", &err), uint32(0), err)
 
@@ -87,51 +88,33 @@ func TestIntegerAccessors(t *testing.T) {
 		{"UInt32 number over", func(e *error) any { return Uint[uint32](m, "u32over", e) }},
 		{"UInt32 string over", func(e *error) any { return Uint[uint32](m, "u32oversmax", e) }},
 		{"UInt64 over", func(e *error) any { return Uint[uint64](m, "u64over", e) }},
-		{"Int64 over", func(e *error) any { return Int[int64](m, "i64over", e) }},
-		{"Int32 from Int64 max", func(e *error) any { return Int[int32](m, "i64s", e) }},
+		{"Int64 over", func(e *error) any { return Int64(m, "i64over", e) }},
 		{"UInt8 over", func(e *error) any { return Uint[uint8](m, "u8over", e) }},
 		{"negative unsigned (number)", func(e *error) any { return Uint[uint64](m, "neg", e) }},
 		{"negative unsigned (string)", func(e *error) any { return Uint[uint32](m, "negs", e) }},
 		{"fractional", func(e *error) any { return Uint[uint32](m, "frac", e) }},
-		{"fractional signed", func(e *error) any { return Int[int64](m, "frac", e) }},
-		{"1.0 is not an integer literal", func(e *error) any { return Int[int64](m, "fracz", e) }},
+		{"fractional signed", func(e *error) any { return Int64(m, "frac", e) }},
+		{"1.0 is not an integer literal", func(e *error) any { return Int64(m, "fracz", e) }},
 		{"exponent", func(e *error) any { return Uint[uint32](m, "exp", e) }},
 		{"non-numeric string", func(e *error) any { return Uint[uint64](m, "word", e) }},
-		{"empty string", func(e *error) any { return Int[int64](m, "empty", e) }},
+		{"empty string", func(e *error) any { return Int64(m, "empty", e) }},
 		{"missing", func(e *error) any { return Uint[uint32](m, "nope", e) }},
 		{"null", func(e *error) any { return Uint[uint32](m, "null", e) }},
-		{"bool", func(e *error) any { return Int[int64](m, "bool", e) }},
+		{"bool", func(e *error) any { return Int64(m, "bool", e) }},
 		{"array", func(e *error) any { return Uint[uint64](m, "arr", e) }},
 		{"float32 from word", func(e *error) any { return Float32(m, "word", e) }},
 		{"float32 missing", func(e *error) any { return Float32(m, "nope", e) }},
+		{"float32 null", func(e *error) any { return Float32(m, "null", e) }},
 	}
 	for _, c := range bad {
 		var err error
 		got := c.f(&err)
 		if err == nil {
 			t.Errorf("%s: no error (got %v)", c.name, got)
-		} else if got != reflectZero(got) {
+		} else if got != reflect.Zero(reflect.TypeOf(got)).Interface() {
 			t.Errorf("%s: got %v with error, want 0", c.name, got)
 		}
 	}
-}
-
-func reflectZero(v any) any {
-	switch v.(type) {
-	case uint8:
-		return uint8(0)
-	case uint32:
-		return uint32(0)
-	case uint64:
-		return uint64(0)
-	case int32:
-		return int32(0)
-	case int64:
-		return int64(0)
-	case float32:
-		return float32(0)
-	}
-	return nil
 }
 
 func TestFirstErrorSticks(t *testing.T) {

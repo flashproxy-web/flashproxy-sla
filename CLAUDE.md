@@ -160,7 +160,7 @@ Shared `internal/` packages:
   cancel-on-disconnect live server-side on the reader *profiles*; timezone correctness relies on
   the **server** being UTC, not a per-query `session_timezone`. Bounds response size, returns
   errors (no silent truncation). `QueryJSON` decodes numbers as `json.Number` (never float64);
-  integer columns are read with the exact, range-checked `Uint[T]`/`Int[T]` (JSON number, or
+  integer columns are read with the exact, range-checked `Uint[T]`/`Int64` (JSON number, or
   JSON string for 64-bit), `Float32` for Float32, lenient `Num` only for display floats.
   Inserts (writer role, not readonly) take a dedup token.
 - **`internal/model`** — `ProbeResult` + `Event` and their **frozen `Canonical()`**
@@ -210,7 +210,7 @@ and website users read statements with no grant change.
 - **Timezone is UTC end-to-end, pinned on the SERVER (not per-query).** Columns are
   `DateTime('UTC')` and ClickHouse runs `<timezone>UTC</timezone>`. The client must NOT send
   `session_timezone` (or any setting) on reads — reader users are `readonly=1` and reject it.
-- **Numeric helpers:** read every integer column with `chstore.Uint[T]`/`Int[T]` sized to
+- **Numeric helpers:** read every integer column with `chstore.Uint[T]`/`Int64` sized to
   the column (they error on missing/malformed/out-of-range, first error kept in `*errp`);
   `cmd/verify` must return that error (fail closed). `Num` is only for fractional display
   values (`round(avg(..),1)`); never narrow `Num` into an integer type.

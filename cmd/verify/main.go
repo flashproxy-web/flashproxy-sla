@@ -287,7 +287,7 @@ func (s *chSource) ledgerPage(ctx context.Context, stream string, from uint64, l
 	for _, m := range rows {
 		out = append(out, ledger.Entry{
 			Stream: chstore.Str(m, "stream"), Seq: chstore.Uint[uint64](m, "seq", &err), Kind: chstore.Str(m, "kind"),
-			TSFirst: chstore.Int[int64](m, "ts_first", &err), TSLast: chstore.Int[int64](m, "ts_last", &err),
+			TSFirst: chstore.Int64(m, "ts_first", &err), TSLast: chstore.Int64(m, "ts_last", &err),
 			RowCount:  chstore.Uint[uint32](m, "row_count", &err),
 			BatchHash: chstore.Str(m, "batch_hash"), PrevHash: chstore.Str(m, "prev_hash"), EntryHash: chstore.Str(m, "entry_hash"),
 		})
@@ -312,7 +312,7 @@ func (s *chSource) rowPage(ctx context.Context, stream string, from, head uint64
 		out := make([]seqRow, 0, len(rows))
 		for _, m := range rows {
 			e := model.Event{
-				TS:   time.Unix(chstore.Int[int64](m, "ts", &err), 0).UTC(),
+				TS:   time.Unix(chstore.Int64(m, "ts", &err), 0).UTC(),
 				Type: chstore.Str(m, "type"), Package: chstore.Str(m, "package"), Message: chstore.Str(m, "message"),
 			}
 			out = append(out, seqRow{Seq: chstore.Uint[uint64](m, "seq", &err), Canon: e.Canonical()})
@@ -335,7 +335,7 @@ func (s *chSource) rowPage(ctx context.Context, stream string, from, head uint64
 	out := make([]seqRow, 0, len(rows))
 	for _, m := range rows {
 		r := model.ProbeResult{
-			TS:      time.Unix(chstore.Int[int64](m, "ts", &err), 0).UTC(),
+			TS:      time.Unix(chstore.Int64(m, "ts", &err), 0).UTC(),
 			Vantage: chstore.Str(m, "vantage"), Package: chstore.Str(m, "package"), Scenario: chstore.Str(m, "scenario"),
 			Proto: chstore.Str(m, "proto"), Target: chstore.Str(m, "target"),
 			IPVersion: chstore.Uint[uint8](m, "ip_version", &err), Success: chstore.Uint[uint8](m, "success", &err),
