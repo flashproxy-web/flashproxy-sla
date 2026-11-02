@@ -34,12 +34,16 @@ writing to one ClickHouse, with read-only websites on top.
 |---|---|
 | **Status page** | <https://status.flashproxy.com> |
 | **SLA** | <https://status.flashproxy.com/sla> — 100% uptime guarantee, automatically compensated, independently verifiable |
-| **Public metrics DB** (read-only) | `https://ch.flashproxy.com` · user `flashproxy-status-public` · password `flashproxy-public-ro` · database `sla` |
+| **Public metrics DB** (read-only) | `https://ch.flashproxy.com` · user `flashproxy-status-public` · password `flashproxy-public-ro` · database `sla`. **Not published yet** (checked 2026-11-02: `ch.flashproxy.com` returned HTTP 530, `status.flashproxy.com` returned HTTP 404; the tunnel ingress for both is commented out) |
 | **Company** | <https://flashproxy.com> |
 
-The production deployment runs workers in **AWS Ashburn (us-east-1)** and **Frankfurt
-(eu-central-1)**, writing to a self-hosted ClickHouse on a bare-metal host exposed only
-through a Cloudflare tunnel (`ch.flashproxy.com`).
+The production deployment runs on the ClickHouse box itself, from `/opt/flashproxy/sla`,
+under systemd: `sla-worker` (the monitor worker), `sla-website` (the status page, on
+`127.0.0.1:8080`, which needs `web/` next to the binary) and, on probe nodes, `sla-origin`
+(port 980). Live configs are `worker.json` and `website.json` in that directory; secrets
+live in root-only env files next to them and are never committed. The earlier AWS fleet
+(Ashburn, Frankfurt, Dallas) and its Terraform were removed on 2026-11-02. The ClickHouse
+host is exposed only through a Cloudflare tunnel (`ch.flashproxy.com`).
 
 ## What it measures
 
@@ -117,8 +121,8 @@ that rests on the open-source code, multiple independent vantages, and live publ
 rewrites.)
 
 Dependency-free Go (standard library only) — builds offline, trivially reproducible.
-ClickHouse is accessed over its HTTP interface; the AWS instances build the binaries
-from source on first boot (no container registry required).
+ClickHouse is accessed over its HTTP interface. Binaries are built manually with
+`make build` and copied to `/opt/flashproxy/sla` (no container registry required).
 
 ## ClickHouse roles
 
@@ -177,12 +181,6 @@ JSON with `${ENV}` expansion so secrets never live in the file.
 - **`deploy/clickhouse-deploy-prompt.md`** — runbook to bring up a self-hosted
   ClickHouse on a bare-metal host: loopback bind + kernel-reserved ports, the three
   roles, exposed only via a Cloudflare tunnel (`ch.flashproxy.com`).
-- **`deploy/terraform/`** — two-region AWS (Ashburn + Frankfurt): a dedicated
-  **dual-stack VPC**, `t4g.small` instances that **build the binaries from source** in
-  cloud-init, the worker + origin (+ website in Ashburn), the security group, and
-  Elastic IPs. The website serves `:443` with a Cloudflare Origin Certificate so the
-  zone's "Full (strict)" mode works; instances resolve DNS via Cloudflare (`1.1.1.1`).
-  Secrets are supplied via env / a gitignored `*.tfvars` — never committed.
 
 ## Transparency & the SLA
 

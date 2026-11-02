@@ -394,9 +394,8 @@ export SLA_PUBLIC_PASSWORD="flashproxy-public-ro"
 ```
 
 Record worker/website/statements passwords in your password manager immediately — they
-are only recoverable by resetting the user. In this project they belong in
-`deploy/terraform/terraform.tfvars`, which lives in S3 (see the Deploy section of
-`CLAUDE.md`).
+are only recoverable by resetting the user. In this project they are kept in
+the root-only env files in `/opt/flashproxy/sla` (`worker.env`, `website.env`), never in git.
 
 ---
 
@@ -475,18 +474,15 @@ the tunnel until it is.
 
 Workers and the website take `clickhouse: {url, db, user, password}` in their JSON
 config, with `${ENV}` expansion so passwords never sit in the file. In this deployment
-those configs are rendered by cloud-init from
-`deploy/terraform/modules/node/user-data.sh.tftpl`, fed by `ch_url`,
-`ch_worker_password`, and `ch_website_password` in `terraform.tfvars`.
+the configs are `/opt/flashproxy/sla/worker.json` and `website.json`, and the passwords
+come from the root-only env files next to them (`worker.env`, `website.env`).
 
-Because that template runs **only on first boot**, changing the CH endpoint on a running
-fleet needs both an edit to the template (so rebuilds keep it) and a hot-patch on each
-box:
+To change the CH endpoint, hot-patch the config on the box, restart the unit, and then
+update the file in whichever config repo is canonical:
 
 ```bash
-./tf.sh ssh ashburn     # then, per box:
-sudo vi /opt/flashproxy/config/worker.json
-sudo systemctl restart flashproxy-worker
+sudo vi /opt/flashproxy/sla/worker.json
+sudo systemctl restart sla-worker
 ```
 
 Confirm data is landing:
@@ -584,7 +580,7 @@ BACKUP DATABASE sla TO Disk('backups', 'sla-{timestamp}.zip');
 RESTORE DATABASE sla FROM Disk('backups', 'sla-....zip');
 ```
 
-Ship the resulting archive off-box (e.g. `aws s3 cp … --sse AES256`) on a cron. A backup
+Ship the resulting archive off-box (e.g. with `rclone`/`scp` to another host, or object storage) on a cron. A backup
 that only exists on the box that dies is not a backup.
 
 ### Upgrades

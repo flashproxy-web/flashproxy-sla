@@ -1,3 +1,6 @@
+> **Historical.** This plan was written for the AWS fleet. AWS and `deploy/terraform/` were
+> removed on 2026-11-02 (commit `88738a7`); the text below is kept unchanged as a record.
+
 # Plan: get the payload origins off AWS-only (item 4)
 
 *Companion to the connect-pool work (items 1–3, already implemented). This is the
