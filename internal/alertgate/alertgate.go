@@ -2,7 +2,8 @@
 // monitor's Discord post for operational <-> degraded transitions (KAN-247).
 //
 // It never changes the SLA verdict: events, the ledger, the website and SLA credits
-// keep using slo.degraded_avg_ms (the "base"/floor). The gate only decides whether a
+// keep using the package's Degraded threshold (slo.degraded_avg_ms, or the per-package
+// value in slo.package_degraded_ms when set; this is the "base"/floor). The gate only decides whether a
 // lower-tier Discord message is sent, raises a per-package alert threshold T when a
 // package flaps into degraded too often, lowers it again on a recheck timer, and
 // emits a once-a-day summary while T is above base.
@@ -41,6 +42,7 @@ type Options struct {
 // Settings are validated, defaulted Options plus the base (floor) threshold.
 type Settings struct {
 	Base        int
+	PackageBase map[string]int // per-package base (floor) overriding Base; nil = Base for all
 	Window      time.Duration
 	MinIssues   int
 	TopN        int
@@ -162,6 +164,7 @@ type Post struct {
 }
 
 type pkgState struct {
+	base       int       // this package's base (floor): Settings.PackageBase[pkg], else Settings.Base
 	t          int       // alert threshold; 0 = base
 	nextCheck  time.Time // zero = no lower-check timer
 	suppressed bool      // the current degraded notice was suppressed -> suppress its recovery too
@@ -196,7 +199,11 @@ func New(s Settings, list Lister, now func() time.Time, logf func(string, ...any
 func (g *Gate) st(pkg string) *pkgState {
 	p := g.pkgs[pkg]
 	if p == nil {
-		p = &pkgState{t: g.s.Base}
+		base := g.s.Base
+		if b, ok := g.s.PackageBase[pkg]; ok {
+			base = b
+		}
+		p = &pkgState{base: base, t: base}
 		g.pkgs[pkg] = p
 	}
 	return p
@@ -218,7 +225,7 @@ func (g *Gate) Transition(ctx context.Context, pkg, prev, status string, ms floa
 	case prev == "degraded" && status == "operational":
 		// While T is raised the package is flapping, so recoveries are noise: drop
 		// them all, not just the ones paired with a suppressed degraded alert.
-		send = !p.suppressed && p.t <= g.s.Base
+		send = !p.suppressed && p.t <= p.base
 		p.suppressed = false
 		p.lastEventAt = time.Time{} // episode over
 		return send, ""
@@ -252,7 +259,7 @@ func (g *Gate) onDegraded(ctx context.Context, pkg string, p *pkgState, ms float
 			return true, g.summary(pkg, p, old, r)
 		}
 	}
-	if p.t > g.s.Base && ms <= float32(p.t) {
+	if p.t > p.base && ms <= float32(p.t) {
 		p.suppressed = true
 		g.logf("alertgate %s: degraded alert suppressed (response %dms <= threshold %dms)", pkg, p.lastEventMs, p.t)
 		return false, ""
@@ -262,13 +269,13 @@ func (g *Gate) onDegraded(ctx context.Context, pkg string, p *pkgState, ms float
 
 // reset returns a package to base with no timers and no daily-summary state.
 func (g *Gate) reset(p *pkgState) {
-	*p = pkgState{t: g.s.Base}
+	*p = pkgState{base: p.base, t: p.base}
 }
 
 func (g *Gate) change(pkg string, p *pkgState, nt int, now time.Time, why string) {
-	g.logf("alertgate %s: threshold %s %dms -> %dms (base %dms)", pkg, why, p.t, nt, g.s.Base)
+	g.logf("alertgate %s: threshold %s %dms -> %dms (base %dms)", pkg, why, p.t, nt, p.base)
 	p.t = nt
-	if nt > g.s.Base {
+	if nt > p.base {
 		p.lastChange = now
 		p.nextCheck = now.Add(g.s.Recheck)
 	} else {
@@ -290,7 +297,7 @@ func (g *Gate) Tick(ctx context.Context) []Post {
 	sort.Strings(pkgs)
 	for _, pkg := range pkgs {
 		p := g.pkgs[pkg]
-		if p.t <= g.s.Base {
+		if p.t <= p.base {
 			continue
 		}
 		lowerDue := !p.nextCheck.IsZero() && !now.Before(p.nextCheck)
@@ -308,7 +315,9 @@ func (g *Gate) Tick(ctx context.Context) []Post {
 		}
 		r := Readings(msgs)
 		if lowerDue {
-			if nt, ok := LowerTarget(g.s, p.t, r); ok {
+			ls := g.s
+			ls.Base = p.base
+			if nt, ok := LowerTarget(ls, p.t, r); ok {
 				old := p.t
 				g.change(pkg, p, nt, now, "lower")
 				out = append(out, Post{pkg, g.summary(pkg, p, old, r)})

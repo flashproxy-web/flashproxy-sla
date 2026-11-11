@@ -5,7 +5,7 @@
   "discord_webhook": "${DISCORD_WEBHOOK}",
   "checkpoint_every_sec": 300,
   "monitor_debounce_n": 2,
-  "//adaptive_alert": "Alert-only adaptive Discord threshold for operational<->degraded (KAN-247). false/absent = today's behaviour. Never changes events, ledger, website or SLA (still slo.degraded_avg_ms). Tuning is optional; values shown are the defaults.",
+  "//adaptive_alert": "Alert-only adaptive Discord threshold for operational<->degraded (KAN-247). false/absent = today's behaviour. Never changes events, ledger, website or SLA (still the package's Degraded threshold, see slo). Tuning is optional; values shown are the defaults.",
   "adaptive_alert": false,
   "adaptive_alert_tuning": {
     "window_min": 180, "min_issues": 5, "top_n": 5,
@@ -39,7 +39,13 @@
     "degraded_avg_ms": 50,
     "degraded_for_min": 5,
     "down_success_pct": 90,
-    "stale_seconds": 120
+    "stale_seconds": 120,
+    "package_degraded_ms": {
+      "residential": 1000,
+      "residential-lite": 1000,
+      "mobile": 2000,
+      "mobile_usa": 2000
+    }
   },
 
   "//connect_targets": "The connect scenario probes a stratified sample of this pool each cycle: the origin (group 'origin', ALWAYS probed = availability floor) plus one endpoint from each of GroupsPerCycle other provider groups. Best result wins (lowest ttfb); Down only if every sampled endpoint fails. All are HTTP/80 connectivity checks with a fetchable body or 204 — never :443 CONNECT-only (that zeros ttfb). The pool below is shared; give v6 packages the v6 origin. The legacy singular connect_target/origin_get is still honored as a one-element fallback.",
@@ -75,6 +81,10 @@
     { "package": "datacenter",       "proxy_url": "${DC_PROXY_URL}",      "ip_version": 4, "interval_ms": 20000, "connect_target": "${ORIGIN_HOST}:8080",   "origin_get": "/connect" },
     { "package": "ipv6-residential", "proxy_url": "${IPV6_PROXY_URL}",    "ip_version": 6, "interval_ms": 20000, "connect_target": "[${ORIGIN_IPV6}]:8080", "origin_get": "/connect" },
     { "package": "ipv6-datacenter",  "proxy_url": "${IPV6_DC_PROXY_URL}", "ip_version": 6, "interval_ms": 20000, "connect_target": "[${ORIGIN_IPV6}]:8080", "origin_get": "/connect" },
-    { "package": "isp_eu",           "proxy_url": "${ISP_EU_PROXY_URL}",  "ip_version": 4, "interval_ms": 20000, "connect_target": "${ORIGIN_HOST}:8080",   "origin_get": "/connect" }
+    { "package": "isp_eu",           "proxy_url": "${ISP_EU_PROXY_URL}",  "ip_version": 4, "interval_ms": 20000, "connect_target": "${ORIGIN_HOST}:8080",   "origin_get": "/connect" },
+    { "package": "residential",      "proxy_url": "${RESI_PROXY_URL}",            "ip_version": 4, "interval_ms": 20000, "connect_target": "${ORIGIN_HOST}:8080", "origin_get": "/connect" },
+    { "package": "residential-lite", "proxy_url": "${LITE_PROXY_URL}",            "ip_version": 4, "interval_ms": 20000, "connect_target": "${ORIGIN_HOST}:8080", "origin_get": "/connect" },
+    { "package": "mobile",           "proxy_url": "${MOBILE_PROXY_URL}",           "ip_version": 4, "interval_ms": 20000, "connect_target": "${ORIGIN_HOST}:8080", "origin_get": "/connect" },
+    { "package": "mobile_usa",       "proxy_url": "${MOBILE_US_PROXY_URL}",       "ip_version": 4, "interval_ms": 20000, "connect_target": "${ORIGIN_HOST}:8080", "origin_get": "/connect" }
   ]
 }

@@ -22,6 +22,12 @@
     "degraded_avg_ms": 50,
     "degraded_for_min": 5,
     "down_success_pct": 90,
-    "stale_seconds": 120
+    "stale_seconds": 120,
+    "package_degraded_ms": {
+      "residential": 1000,
+      "residential-lite": 1000,
+      "mobile": 2000,
+      "mobile_usa": 2000
+    }
   }
 }

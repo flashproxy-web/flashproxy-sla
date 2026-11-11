@@ -93,7 +93,7 @@ Three binaries, strictly separated by what they touch:
   unrounded `float32` so the `<= T` suppression check is not decided by rounding. With >= 5 issues, T rises to 5th-highest x 1.1 and
   a one-line raise announcement (old→new, count, top readings) replaces the alert; below T alerts are suppressed, and while T > base every `degraded -> operational` recovery is suppressed too. A 3 h recheck from each change lowers T (if the package is still in an open degraded episode, the 📉 post appends `, degraded (<ms>ms) since <date time>`; the episode start and its first reading are kept per package in memory, set on `operational -> degraded` and cleared on recovery or reset); while T > base a once-a-day summary
   goes out per package (10:00; 16:00 instead if a raise/lower was already posted that day and the last one is >= 3 h old, else skipped; Asia/Jerusalem). The daily state resets when T returns to base. A transition to `down`/`no_data` also resets the package's adaptive state. Issue counting is deliberately broader than the gate: every `* -> degraded` row (except from `startup`) counts, but only `operational <-> degraded` is gated. If the event write fails (only logged), the lookup misses the current issue, so that one decision counts one short; this fails safe. State is in memory (restart = base, no startup post; the next degraded event with >= 5 issues still in the window raises T again and announces it);
-  a query error fails open. Events, ledger, website and SLA still use `slo.degraded_avg_ms`.
+  a query error fails open. Events, ledger, website and SLA still use the package's Degraded threshold (`slo.degraded_avg_ms`, or its entry in `slo.package_degraded_ms` when set).
   Tunables: `adaptive_alert_tuning` (see `config/worker.example.json`).
 - **`cmd/website`** — strictly **read-only** (reader role; never writes). Hardened
   `http.Server` (timeouts, panic recovery, security headers, TLS 1.2 min); server-renders
@@ -147,7 +147,7 @@ Shared `internal/` packages:
 - **`internal/slo`** — implements the **published SLA contract exactly, CROSS-VANTAGE**: a
   package is **Down only when ALL vantages are down that minute** (a single-vantage failure is
   NOT Down — it isolates one network path, not the proxy); **Degraded** = best-vantage
-  **average round-trip response time (`ttfb_ms`)** > `degraded_avg_ms` (50) for `degraded_for_min`
+  **average round-trip response time (`ttfb_ms`)** > the package's Degraded threshold (`degraded_avg_ms`, 50, unless `package_degraded_ms` overrides it) for `degraded_for_min`
   (5) **consecutive** minutes; Availability% = (withData − Down − ½·Degraded)/withData. The SLA
   *latency* metric is the response time (`MinutesSQL` selects `avg(ttfb_ms)`), NOT connect-ms;
   availability/Down is still based on connect `success`. The per-vantage latency-Degraded verdict

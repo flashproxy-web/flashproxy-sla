@@ -131,7 +131,7 @@ func TestCrossVantageDownRequiresAll(t *testing.T) {
 		bv["us"][tt] = Minute{T: tt, ResponseMsAvg: 200, SuccessPct: 0, Samples: 10}  // down
 		bv["eu"][tt] = Minute{T: tt, ResponseMsAvg: 30, SuccessPct: 100, Samples: 10} // up
 	}
-	pr := rollupPackageSeries(bv, grid, now+10, testSLO)
+	pr := rollupPackageSeries("pkg", bv, grid, now+10, testSLO)
 	if pr.Status != "operational" {
 		t.Fatalf("one vantage down, one up -> package must NOT be down; got %s", pr.Status)
 	}
@@ -146,7 +146,7 @@ func TestCrossVantageDownRequiresAll(t *testing.T) {
 	for _, tt := range grid {
 		bv["eu"][tt] = Minute{T: tt, ResponseMsAvg: 200, SuccessPct: 0, Samples: 10}
 	}
-	pr = rollupPackageSeries(bv, grid, now+10, testSLO)
+	pr = rollupPackageSeries("pkg", bv, grid, now+10, testSLO)
 	if pr.Status != "down" {
 		t.Fatalf("all vantages down -> package must be down; got %s", pr.Status)
 	}
@@ -170,7 +170,7 @@ func TestNonHomeVantageNotDegraded(t *testing.T) {
 		bv["us"][tt] = Minute{T: tt, ResponseMsAvg: 4, SuccessPct: 100, Samples: 10}   // home, fast
 		bv["eu"][tt] = Minute{T: tt, ResponseMsAvg: 200, SuccessPct: 100, Samples: 10} // cross-region, far
 	}
-	pr := rollupPackageSeries(bv, grid, now+10, testSLO)
+	pr := rollupPackageSeries("pkg", bv, grid, now+10, testSLO)
 	if pr.Status != "operational" {
 		t.Fatalf("package should be operational (home=4ms), got %s", pr.Status)
 	}
@@ -193,7 +193,7 @@ func TestNonHomeVantageNotDegraded(t *testing.T) {
 	for _, tt := range grid {
 		bv["us"][tt] = Minute{T: tt, ResponseMsAvg: 80, SuccessPct: 100, Samples: 10}
 	}
-	pr = rollupPackageSeries(bv, grid, now+10, testSLO)
+	pr = rollupPackageSeries("pkg", bv, grid, now+10, testSLO)
 	if pr.Status != "degraded" {
 		t.Fatalf("home vantage 80ms sustained -> package degraded, got %s", pr.Status)
 	}

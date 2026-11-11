@@ -40,6 +40,19 @@ type SLO struct {
 	DegradedForMin int     `json:"degraded_for_min"` // consecutive over-threshold minutes that trigger Degraded
 	DownSuccessPct float64 `json:"down_success_pct"` // connect success% below which a minute is Down
 	StaleSeconds   int64   `json:"stale_seconds"`    // age of newest data beyond which status is no_data
+	// PackageDegradedMs overrides DegradedAvgMs per package (key = package name).
+	// Absent/empty = every package uses DegradedAvgMs.
+	PackageDegradedMs map[string]float64 `json:"package_degraded_ms,omitempty"`
+}
+
+// ForPackage returns s with DegradedAvgMs replaced by the package's own threshold
+// when one is configured; otherwise s unchanged. Callers apply withDefaults after.
+func (s SLO) ForPackage(pkg string) SLO {
+	// Values below 1 ms are ignored (global threshold applies), same rule as the worker's alert gate.
+	if ms, ok := s.PackageDegradedMs[pkg]; ok && ms >= 1 {
+		s.DegradedAvgMs = ms
+	}
+	return s
 }
 
 func (s SLO) withDefaults() SLO {
@@ -283,8 +296,8 @@ type PackageRollup struct {
 // threshold — so non-home vantages are classified on AVAILABILITY only (reachable ⇒
 // operational), never falsely "degraded". This matches the SLA, where Degraded is a
 // best-vantage concept. Down still requires unavailable-everywhere.
-func rollupPackageSeries(byVantage map[string]map[int64]Minute, grid []int64, now int64, s SLO) PackageRollup {
-	s = s.withDefaults()
+func rollupPackageSeries(pkg string, byVantage map[string]map[int64]Minute, grid []int64, now int64, s SLO) PackageRollup {
+	s = s.ForPackage(pkg).withDefaults()
 	vans := make([]string, 0, len(byVantage))
 	for v := range byVantage {
 		vans = append(vans, v)
@@ -407,7 +420,7 @@ func RollupPackages(ctx context.Context, ch *chstore.Client, db string, windowMi
 	grid := Grid(now, windowMin)
 	out := make([]PackageRollup, 0, len(data))
 	for _, pkg := range sortedKeys(data) {
-		pr := rollupPackageSeries(data[pkg], grid, now.Unix(), s)
+		pr := rollupPackageSeries(pkg, data[pkg], grid, now.Unix(), s)
 		pr.Package = pkg
 		out = append(out, pr)
 	}
@@ -500,7 +513,7 @@ func statuses(data map[string]map[string]map[int64]Minute, now time.Time, window
 	grid := Grid(now, windowMin)
 	out := make([]Status, 0, len(data))
 	for _, pkg := range sortedKeys(data) {
-		pr := rollupPackageSeries(data[pkg], grid, now.Unix(), s)
+		pr := rollupPackageSeries(pkg, data[pkg], grid, now.Unix(), s)
 		out = append(out, Status{
 			Package: pkg, Vantage: pr.BestVantage, Status: pr.Status,
 			ResponseMsAvg: pr.ResponseMsAvg, SuccessPct: pr.SuccessPct,

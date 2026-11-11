@@ -203,6 +203,15 @@ func loadConfig(p string) Config {
 		if err != nil {
 			log.Fatalf("config: adaptive_alert_tuning: %v", err)
 		}
+		for pkg, ms := range c.SLO.PackageDegradedMs {
+			if ms < 1 {
+				continue // same rule as slo.ForPackage: ignored, global threshold applies
+			}
+			if s.PackageBase == nil {
+				s.PackageBase = map[string]int{}
+			}
+			s.PackageBase[pkg] = int(math.Round(ms))
+		}
 		c.adaptive = s
 	}
 	return c

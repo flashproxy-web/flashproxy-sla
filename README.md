@@ -76,7 +76,7 @@ contract can't drift:
 
 - **Available** — the `connect` scenario succeeds.
 - **Down** — a minute that is below the success threshold (`down_success_pct`, default 90) **from every vantage simultaneously**. A single-vantage failure is **not** Down (it isolates one network path, not the proxy).
-- **Degraded** — Available, but the **best vantage's average round-trip response time exceeds 50 ms for 5 consecutive minutes** (and stays Degraded until it recovers). The run-up minutes before the trigger are not yet Degraded.
+- **Degraded** — Available, but the **best vantage's average round-trip response time exceeds the product's Degraded threshold (50 ms for the original products) for 5 consecutive minutes** (and stays Degraded until it recovers). The run-up minutes before the trigger are not yet Degraded.
 - **Availability%** = (minutes with data − Down − ½·Degraded) / minutes with data × 100.
 
 The exact thresholds are published at `/api/meta`, so the verdict is reproducible from
