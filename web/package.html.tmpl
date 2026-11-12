@@ -28,7 +28,7 @@
 
     <section class="intro">
       <h1>{{.Name}}</h1>
-      <p>Degraded above {{.DegradedMs}} ms (average above {{.DegradedMs}} ms for {{.DegradedForMin}} consecutive minutes on the best vantage)</p>
+      <p>Marked degraded when average response time stays above {{.DegradedMs}} ms for {{.DegradedForMin}} consecutive minutes on the best vantage.</p>
     </section>
 
     <section class="metrics" id="detail" data-pkg="{{.Package}}" data-vantage="{{.DefaultVantage}}">

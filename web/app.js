@@ -62,7 +62,10 @@ function initIndex(host) {
     }).join("");
 
     const uptime = v ? v.uptime_pct : c.uptime_pct;
-    const deg = (typeof c.degraded_ms === "number") ? `Degraded above ${c.degraded_ms} ms` : "";
+    // Footer middle slot: the package's Degraded threshold (a fixed fact about the
+    // product, not a reading). Omitted when the API sends no usable value.
+    const dms = Number(c.degraded_ms);
+    const mid = dms > 0 ? `marked degraded above ${esc(String(+dms.toFixed(1)))} ms` : "";
     return `<div class="comp-top">` +
         `<span class="sq" data-status="${esc(status)}" aria-hidden="true"></span>` +
         `<a class="comp-name" href="/${encodeURIComponent(c.package)}">${esc(c.package)}</a>` +
@@ -73,7 +76,7 @@ function initIndex(host) {
       `<div class="bars">${barsHTML}</div>` +
       `<div class="comp-bot">` +
         `<span class="left">${win}m ago</span>` +
-        `<span class="mid">${deg}</span>` +
+        `<span class="mid">${mid}</span>` +
         `<span class="right">uptime ${(uptime ?? 100).toFixed(1)}% · now</span>` +
       `</div>`;
   }
