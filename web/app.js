@@ -93,7 +93,7 @@ function initCards(host, only) {
 
   // The package's bars as markup. With a vantage chosen (v), every bar is split:
   // package above, that vantage below, matched by minute t.
-  // Display only: the newest minute is often still filling in, so drop that one
+  // Display only: the server drops a newest minute that is still filling in.
   // bar when the package has no_data there. Verdicts and uptime come from the
   // server unchanged.
   function barSeries(series) { return (Array.isArray(series) ? series : []).filter(Boolean); }
@@ -169,7 +169,7 @@ function initCards(host, only) {
       const pitch = lay.b + lay.g;
       // Centre the full row of n blocks: the leftover width is split evenly and
       // the offset is a whole device pixel. The full series is used (not the m
-      // blocks drawn), so hiding the newest block moves nothing.
+      // blocks drawn).
       const total = n * lay.b + (n - 1) * lay.g;
       const off = lay.scroll ? 0 : Math.max(0, Math.floor((wDev - total) / 2));
       const width = (lay.b / dpr) + "px";
@@ -231,7 +231,7 @@ function initCards(host, only) {
   function cardHTML(c, v, win, lay) {
     const status = c.status || "no_data";
     const barsMarkup = barsHTML(c.bars, v);
-    // Sized for the whole series, so hiding the newest block moves nothing.
+    // Sized for the whole series.
     const nBars = barSeries(c.bars).length;
     // lay.b / lay.g are device pixels; the markup carries them as CSS pixels for
     // the moment before layoutBars places the blocks (same call, see renderComponents).

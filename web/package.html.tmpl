@@ -44,7 +44,7 @@
     <ul class="keys" aria-label="How to read the card">
       <li><span class="k">status</span> <i class="sq" data-status="operational"></i> operational <i class="sq" data-status="degraded"></i> degraded <i class="sq" data-status="down"></i> down <i class="sq" data-status="no_data"></i> no data</li>
       <li><span class="k">bars</span> one block per minute: <i class="sw" data-status="operational"></i> operational <i class="sw" data-status="degraded"></i> degraded <i class="sw" data-status="down"></i> down <i class="sw" data-status="no_data"></i> no data</li>
-      <li><span class="k">newest</span> the newest block is hidden while it has no data.</li>
+      <li><span class="k">empty</span> a block with no data is a real gap: a vantage down, connectivity lost, or no vantage running. The newest minute is dropped only while it is still filling in.</li>
       <li><span class="k">chips</span> <span class="vchip dim">vantage</span> dimmed by default; a click shows that vantage's bars <span class="vchip sel">vantage</span>; a click on the active chip clears it; a click on another chip switches.</li>
       <li><span class="k">split bar</span> <i class="bar split"><span class="half" data-status="operational"></span><span class="half van" data-status="degraded"></span></i> with a vantage selected: upper half = package status, lower half = that vantage's status (thin border).</li>
       <li><span class="k">degraded</span> "marked degraded above {{.DegradedMs}} ms": the package is degraded when its best vantage's average response time stays above {{.DegradedMs}} ms for {{.DegradedForMin}} consecutive minutes; one vantage above {{.DegradedMs}} ms is not enough on its own.</li>
