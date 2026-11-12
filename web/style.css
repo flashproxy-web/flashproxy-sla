@@ -17,6 +17,8 @@
   --deg-bg: #f7f1e3;
   --dn-bg: #f7eaea;
   --nd-bg: #f0f1ee;
+
+  --mono: "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
 * { box-sizing: border-box; }
@@ -25,7 +27,7 @@ html, body {
   margin: 0;
   background: var(--bg);
   color: var(--ink);
-  font-family: "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--mono);
   font-size: 13px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
@@ -75,9 +77,17 @@ html, body {
 }
 .comp:hover { background: #fafbf8; }
 
-.comp-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+/* top row: square, name, spacer, vantage chips, status. The spacer fills the first
+   line; whatever wraps (chips first, then the status) stays on the right. */
+.comp-top {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+  gap: 6px 10px; min-width: 0;
+}
 .comp-top .spacer { flex: 1 1 0; }
-.comp-top .vchips { margin: 0; }
+.comp-top .vchips { margin: 0; justify-content: flex-end; min-width: 0; }
+/* chips size to their content (no fixed width); only the ms field has a fixed
+   text width (app.js msField). A chip never breaks inside; the group wraps. */
+.comp-top .vchip { flex: none; font-family: var(--mono); white-space: pre; }
 .comp-name { font-weight: 600; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
 .comp-name:hover { text-decoration: underline; }
 /* stretched link: the whole card opens the package page */
@@ -100,6 +110,9 @@ html, body {
 .sq[data-status="no_data"] { background: var(--nd); color: var(--ink); }
 .sq[data-status="no_data"]::before { content: "?"; }
 .comp-stat { font-size: 11px; text-transform: lowercase; letter-spacing: .04em; }
+/* index cards: label right-aligned, padded from the left to 11 characters
+   (app.js / index.html.tmpl) */
+.comp-top .comp-stat { flex: none; font-family: var(--mono); white-space: pre; }
 .comp-stat[data-status="operational"] { color: var(--op); }
 .comp-stat[data-status="degraded"]    { color: var(--deg); }
 .comp-stat[data-status="down"]        { color: var(--dn); }

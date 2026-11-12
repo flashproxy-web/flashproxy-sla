@@ -9,6 +9,19 @@ function shortV(v) { return String(v).replace(/^aws-/, ""); }
 function esc(s) {
   return String(s).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
+// Fixed-width text for the index cards. The fill is U+00A0 so HTML keeps it.
+const NBSP = "\u00a0";
+// "1234ms" / "   1ms": number right-aligned in 4 characters, then "ms". A value
+// above 9999 is shown as it is (the field just gets wider). No reading: a dash in
+// the same 6 characters.
+function msField(v) {
+  if (v == null || isNaN(v)) return ("—").padStart(4, NBSP) + NBSP + NBSP;
+  return String(Math.round(v)).padStart(4, NBSP) + "ms";
+}
+// Status word right-aligned: padded from the left to the longest label
+// ("operational", 11 characters).
+const STATUS_W = 11;
+function statusField(status) { return String(status).replace(/_/g, " ").padStart(STATUS_W, NBSP); }
 function isVisible() { return document.visibilityState === "visible"; }
 
 // ---------------------------------------------------------------- index "/"
@@ -55,10 +68,10 @@ function initIndex(host) {
       const on = v && vv.vantage === v.vantage;
       const best = vv.vantage === c.default_vantage;
       const cls = "vchip" + (on ? " sel" : "") + (best ? " best" : "");
-      const med = vv.status === "no_data" ? "—" : fmt(vv.response_ms_avg) + "ms";
+      const med = msField(vv.status === "no_data" ? null : vv.response_ms_avg);
       const title = `${vv.status.replace("_", " ")} · ${(vv.success_pct ?? 0).toFixed(1)}% ok · n=${fmt(vv.samples)}/min`;
       return `<button type="button" class="${cls}" data-v="${esc(vv.vantage)}" data-status="${esc(vv.status)}" ` +
-             `aria-pressed="${on ? "true" : "false"}" title="${esc(title)}">${best ? "★ " : ""}${esc(shortV(vv.vantage))} ${med}</button>`;
+             `aria-pressed="${on ? "true" : "false"}" title="${esc(title)}"><span class="vn">${best ? "★ " : ""}${esc(shortV(vv.vantage))}</span> <span class="vms">${med}</span></button>`;
     }).join("");
 
     const uptime = v ? v.uptime_pct : c.uptime_pct;
@@ -69,9 +82,9 @@ function initIndex(host) {
     return `<div class="comp-top">` +
         `<span class="sq" data-status="${esc(status)}" aria-hidden="true"></span>` +
         `<a class="comp-name" href="/${encodeURIComponent(c.package)}">${esc(c.display_name || c.package)}</a>` +
-        (chips ? `<span class="vchips">${chips}</span>` : "") +
         `<span class="spacer"></span>` +
-        `<span class="comp-stat" data-status="${esc(status)}">${esc(status.replace("_", " "))}</span>` +
+        (chips ? `<span class="vchips">${chips}</span>` : "") +
+        `<span class="comp-stat" data-status="${esc(status)}">${esc(statusField(status))}</span>` +
       `</div>` +
       `<div class="bars">${barsHTML}</div>` +
       `<div class="comp-bot">` +

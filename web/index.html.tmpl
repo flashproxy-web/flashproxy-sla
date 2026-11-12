@@ -53,7 +53,7 @@
           <span class="sq" data-status="{{.Status}}" aria-hidden="true"></span>
           <a class="comp-name" href="/{{.Name}}">{{.DisplayName}}</a>
           <span class="spacer"></span>
-          <span class="comp-stat" data-status="{{.Status}}">{{.StatusLabel}}</span>
+          <span class="comp-stat" data-status="{{.Status}}">{{if eq .Status "degraded"}}&nbsp;&nbsp;&nbsp;{{else if eq .Status "down"}}&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{{else if eq .Status "no_data"}}&nbsp;&nbsp;&nbsp;&nbsp;{{end}}{{.StatusLabel}}</span>
         </div>
         <div class="comp-bot"><span class="mid">marked degraded above {{.DegradedMs}} ms</span></div>
       </div>
