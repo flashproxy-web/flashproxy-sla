@@ -64,8 +64,8 @@ visible. One row per attempt lands in `sla.probe_raw`.
 The headline `connect` probe targets the project's **own deterministic origin**, not a
 third-party site, so the SLA number isn't polluted by some external host's availability
 (third-party reachability is measured separately by `scraping`). The page auto-selects
-the **best vantage** per product (lowest average response time) as the default, with a
-per-product toggle; the latency chart overlays **response time via proxy vs direct** so the
+the **best vantage** per product (lowest average response time) as the default; on the
+status page a vantage chip splits each card's bars (package above, that vantage's own status below); the latency chart overlays **response time via proxy vs direct** so the
 network floor and the proxy overhead are side by side. `net_rtt` is a stdlib TCP-connect
 timing (no ICMP/raw sockets), so it works unprivileged in the distroless image.
 
@@ -76,7 +76,8 @@ contract can't drift:
 
 - **Available** — the `connect` scenario succeeds.
 - **Down** — a minute that is below the success threshold (`down_success_pct`, default 90) **from every vantage simultaneously**. A single-vantage failure is **not** Down (it isolates one network path, not the proxy).
-- **Degraded** — Available, but the **best vantage's average round-trip response time exceeds the product's Degraded threshold (`slo.degraded_avg_ms`, 50 ms by default, unless `slo.package_degraded_ms` overrides it for that package) for 5 consecutive minutes** (and stays Degraded until it recovers). The run-up minutes before the trigger are not yet Degraded.
+- **Degraded** — Available, but the **best vantage's average round-trip response time exceeds the product's Degraded threshold (`slo.degraded_avg_ms`, 50 ms by default, unless the package's `target_ms` in the `packages` list overrides it) for 5 consecutive minutes** (and stays Degraded until it recovers). The run-up minutes before the trigger are not yet Degraded.
+- The package verdict, uptime and incidents follow the best vantage. The per-vantage view on the status page is display only: each vantage classifies its **own** minutes (down below `down_success_pct`; degraded when its own response time stays above the package threshold for 5 consecutive minutes; otherwise operational).
 - **Availability%** = (minutes with data − Down − ½·Degraded) / minutes with data × 100.
 
 The exact thresholds are published at `/api/meta`, so the verdict is reproducible from
@@ -146,8 +147,8 @@ password hashes) — see `deploy/clickhouse-deploy-prompt.md`.
 
 ## Pages & API
 
-- **`/`** — server-rendered status page (crawlable; Organization + WebSite + FAQ JSON-LD). One card per product; each card footer reads "marked degraded above N ms".
-- **`/<package>`** — server-rendered detail page per product (chart, vantage chips, last-10-min scenarios). Unknown names (no probe rows in the last 7 days) return 404.
+- **`/`** — server-rendered status page (crawlable; Organization + WebSite + FAQ JSON-LD). One card per product: display name (links to `/<package>`), vantage chips, status pill at the right; the footer reads "marked degraded above N ms". By default the bars are the package bars and the chips are dimmed; clicking a chip shows that vantage's bars (each bar split: package above, vantage below), clicking it again clears the filter.
+- **`/<package>`** — server-rendered detail page per product (chart, vantage chips, last-10-min scenarios). Unknown names (no probe rows in the last 7 days) return 404. An old key (`alt` of a product) redirects (302) to its short key.
 - **`/incidents`** — downtime and degradation history; client-side package filter chips.
 - **`/sla`** — server-rendered Service Level Agreement (crawlable; FAQ JSON-LD).
 - **`/api/overview`** — per-product, per-vantage status + 90-bar uptime, with the best vantage marked; each component carries `degraded_ms` (its effective Degraded threshold).
@@ -173,13 +174,28 @@ ISP_PROXY_URL='http://USER:PASS@HOST:30' docker compose --profile demo up --buil
 JSON with `${ENV}` expansion so secrets never live in the file.
 
 - `config/website.example.json` — listen addr, ClickHouse (reader) creds, the public
-  key to publish, optional TLS, `site_url`, and SLO thresholds (`slo.package_degraded_ms` overrides
-  the Degraded threshold per package; see `CLAUDE.md`).
+  key to publish, optional TLS, `site_url`, SLO thresholds (`slo` block), and the top-level
+  `packages` list (see below).
 - `config/worker.example.json` — vantage id, ClickHouse (writer) creds, the
   origin(s) for payload scenarios, scrape hosts, scenario intervals, and the list of
-  packages → `proxy_url` (e.g. `${ISP_PROXY_URL}`), target, and IP version, plus the `slo` block
-  (same `package_degraded_ms` map). The example holds probe entries for residential, residential-lite,
+  probe `targets` → `proxy_url` (e.g. `${ISP_PROXY_URL}`), target, and IP version, plus the `slo` block
+  and the same `packages` list. The example holds probe entries for residential, residential-lite,
   mobile and mobile_usa; they are not in the live worker config.
+
+### `packages` (top level of `worker.json` and `website.json`)
+
+One list, one entry per product (replaces the removed `slo.package_degraded_ms`, `package_names`
+and `package_alts`):
+
+- `short` — the real key (routes, ledger, rollup, `data-pkg`, thresholds, alerts).
+- `alt` — the old live key, or `null`. The website merges alt-key rows into `short` per product,
+  vantage and minute: the short-key row wins, else the alt row, never both. `alt == short` is a no-op;
+  chains, duplicate alts, invalid alts and empty names stop the website and the worker at startup. The worker does not
+  merge yet (KAN-412), so rows still under an alt key keep the global threshold there.
+- `name` — display text (cards, package page, incident chips and rows); absent = the short key.
+- `target_ms` — Degraded threshold in whole ms, minimum 1; absent or invalid falls back to
+  `slo.degraded_avg_ms` (50).
+- `covered` — carried as data; no verdict uses it.
 
 ## Deploy
 

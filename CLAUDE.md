@@ -93,7 +93,7 @@ Three binaries, strictly separated by what they touch:
   unrounded `float32` so the `<= T` suppression check is not decided by rounding. With >= 5 issues, T rises to 5th-highest x 1.1 and
   a one-line raise announcement (old→new, count, top readings) replaces the alert; below T alerts are suppressed, and while T > base every `degraded -> operational` recovery is suppressed too. A 3 h recheck from each change lowers T (if the package is still in an open degraded episode, the 📉 post appends `, degraded (<ms>ms) since <date time>`; the episode start and its first reading are kept per package in memory, set on `operational -> degraded` and cleared on recovery or reset); while T > base a once-a-day summary
   goes out per package (10:00; 16:00 instead if a raise/lower was already posted that day and the last one is >= 3 h old, else skipped; Asia/Jerusalem). The daily state resets when T returns to base. A transition to `down`/`no_data` also resets the package's adaptive state. Issue counting is deliberately broader than the gate: every `* -> degraded` row (except from `startup`) counts, but only `operational <-> degraded` is gated. If the event write fails (only logged), the lookup misses the current issue, so that one decision counts one short; this fails safe. State is in memory (restart = base, no startup post; the next degraded event with >= 5 issues still in the window raises T again and announces it);
-  a query error fails open. Events, ledger, website and SLA still use the package's Degraded threshold (`slo.degraded_avg_ms`, or its entry in `slo.package_degraded_ms` when set).
+  a query error fails open. Events, ledger, website and SLA still use the package's Degraded threshold (`slo.degraded_avg_ms`, or its `target_ms` in the top-level `packages` list when set).
   Tunables: `adaptive_alert_tuning` (see `config/worker.example.json`).
 - **`cmd/website`** — strictly **read-only** (reader role; never writes). Hardened
   `http.Server` (timeouts, panic recovery, security headers, TLS 1.2 min); server-renders
@@ -149,15 +149,20 @@ Shared `internal/` packages:
 - **`internal/slo`** — implements the **published SLA contract exactly, CROSS-VANTAGE**: a
   package is **Down only when ALL vantages are down that minute** (a single-vantage failure is
   NOT Down — it isolates one network path, not the proxy); **Degraded** = best-vantage
-  **average round-trip response time (`ttfb_ms`)** > the package's Degraded threshold (`degraded_avg_ms`, 50, unless `package_degraded_ms` overrides it) for `degraded_for_min`
+  **average round-trip response time (`ttfb_ms`)** > the package's Degraded threshold (`degraded_avg_ms`, 50, unless the package's `target_ms` in the `packages` list overrides it) for `degraded_for_min`
   (5) **consecutive** minutes; Availability% = (withData − Down − ½·Degraded)/withData. The SLA
   *latency* metric is the response time (`MinutesSQL` selects `avg(ttfb_ms)`), NOT connect-ms;
-  availability/Down is still based on connect `success`. The per-vantage latency-Degraded verdict
-  applies only to a product's **home (lowest-latency) vantage** — a far vantage measuring it
-  cross-region (high geographic latency but reachable) is availability-only, never degraded.
+  availability/Down is still based on connect `success`. The **package** verdict, bars, uptime,
+  incidents and alerts are best-vantage (home) based: the latency-Degraded verdict reads only the
+  lowest-latency available vantage each minute. The **per-vantage detail** (`Vantages` in the
+  rollup, shown by the card's vantage filter) is separate and does not change any of that: each
+  vantage classifies its OWN minutes with its own `Evaluator` — down when its connect success is
+  below `down_success_pct`, degraded when its own response time stays above the package threshold
+  for `degraded_for_min` consecutive minutes, otherwise operational (so a far vantage measuring a
+  product cross-region can read degraded there while the package stays operational).
   `RollupPackages()` is the authoritative cross-vantage implementation — the banner, the monitor's
-  `Fetch`, and the uptime/credit accounting all derive from it; `rollupSeries` is the per-vantage
-  building block it reduces. `RollupIncidents()`/`IncidentsFromBars()` derive the `/incidents`
+  `Fetch`, and the uptime/credit accounting all derive from it; `rollupSeries` runs only on the
+  synthetic best-vantage series; the per-vantage detail uses one `Evaluator` per vantage. `RollupIncidents()`/`IncidentsFromBars()` derive the `/incidents`
   history from those **same rollup bars**, so a listed incident matches what the credit engine
   bills. Thresholds published at `/api/meta` so the verdict is reproducible.
 - **`internal/chstore`** — stdlib-only ClickHouse HTTP client. **Sends NO client-set settings on
@@ -182,11 +187,25 @@ Phase 1 (now): the site is served internally only (`127.0.0.1:8080`). Phase 2: p
 Cloudflare. **Phase 2 is not set up**; the cache headers below exist for it, and Phase 1 has no CDN in front.
 
 - **`/`** is the status page: legend at the top, one card per product with a status square, the
-  name as a link to `/<package>`, vantage chips, uptime, and the footer text
-  `marked degraded above N ms` (N = that package's effective Degraded threshold). Chips only switch the
-  reading shown on the card (they never navigate). The newest bar is hidden while it has no data
+  display name (`name` from the `packages` list, else the short key) as a stretched link to `/<package>`,
+  vantage chips, the status pill, uptime, and the footer text
+  `marked degraded above N ms` (N = that package's effective Degraded threshold). Row order: name,
+  spacer, chips, status pill, so the pill is at the right and the chips sit left of it (the server-rendered first version has no chips; `app.js` adds them). Status labels
+  are padded from the left to 11 characters so they right-align; chip milliseconds are right-aligned in
+  4 characters plus `ms` using non-breaking spaces (values above 9999 are shown as they are). Chips never navigate;
+  they drive the vantage filter below. The newest bar is hidden while it has no data
   (display only; verdicts and uptime come from the server). The server renders a first version; `app.js`
   replaces it from `/api/overview`.
+- **Vantage filter (cards on `/`).** By default a card's bars are the PACKAGE bars and the vantage
+  chips are dimmed. Clicking a chip shows that vantage's bars; clicking the active chip clears the
+  filter; clicking another chip switches. With a vantage selected each bar is split vertically with no
+  gap: upper half = package status, lower half = that vantage's status (a thin border marks vantage
+  data). The vantage status comes from the per-vantage verdict described under `internal/slo`. The
+  package bars, the SLA verdict, uptime, incidents and alerts still follow the best-vantage (home)
+  rule; the filter is display only. The choice is kept per card across the 15 s refresh.
+- **Display names.** The website display name comes from the `name` field of the `packages` list (card,
+  package page title and heading, incident chips and rows). Routes, `data-pkg`, `?package=` and
+  thresholds use the short key.
 - **`/<package>`** is a server-rendered detail page: title, canonical and og tags come from the
   package name; response-time chart (proxy vs direct) with HTML axis labels; vantage chips; scenarios
   (last 10 min, proxy vs direct); links to `/` and to `/incidents?package=<name>`. The intro text
@@ -198,7 +217,9 @@ Cloudflare. **Phase 2 is not set up**; the cache headers below exist for it, and
   path segment matching `pkgRe` (`^[a-zA-Z0-9_.-]{1,64}$`) gets one primary-key-style lookup in
   `probe_raw` (last 7 days): found = page; not found = 404 with `Cache-Control: public, max-age=3600`;
   lookup error = 502 with no cache header. Two-segment paths, trailing slashes, names starting with `.`
-  and names ending in `.tmpl` are 404 (no lookup).
+  and names ending in `.tmpl` are 404 (no lookup). **Old-key redirect:** a request for `/<alt>`
+  (an alt of the `packages` list that is not also a short key) returns `302` to `/<short>` with
+  `Cache-Control: no-cache`, before any lookup. Website only.
 - **Cache headers.** `/api/overview` `public, max-age=14`; `/api/series` and `/api/scenarios`
   `public, max-age=29` (success only; errors carry no max-age); package page `public, max-age=300` when its
   vantage chips loaded, else `no-cache`; other JSON endpoints `no-cache`. Also set in code: `/` `max-age=30`,
@@ -212,25 +233,41 @@ Cloudflare. **Phase 2 is not set up**; the cache headers below exist for it, and
   by the JS and used only if it matches a chip; the server ignores it. Chips are sorted down first, then
   degraded (by whether the package has such an incident in the listed window), then the rest, by name.
 
-### Per-package Degraded thresholds
+### Per-package configuration (`packages`)
 
-- `slo.package_degraded_ms` (in the `slo` block of `worker.json` and `website.json`) maps package name to
-  its Degraded threshold in whole ms, minimum 1 (values below 1 are ignored). Unset packages use
-  `slo.degraded_avg_ms` (50 by default). Keys must match the probe `package` name exactly.
-- The same map sets the Discord adaptive gate's base per package (`alertgate` `PackageBase`, built in
-  `cmd/worker` config load). Events, ledger, SLA credits and incidents use the same value through the
+- One list, `packages`, at the TOP LEVEL of `worker.json` and `website.json` (and the example files)
+  holds everything per product. The old `slo.package_degraded_ms`, `package_names` and `package_alts`
+  maps are removed. Each entry:
+  - `short`: the real key, used internally (routes, ledger, rollup, `data-pkg`, thresholds, alerts).
+  - `alt`: the old live key, or `null`; its rows are merged into `short` during the cutover overlap.
+  - `name`: display text; absent = the short key. Present but empty is a config error.
+  - `target_ms`: Degraded threshold in whole ms, minimum 1; absent or invalid (below 1, not whole)
+    falls back to `slo.degraded_avg_ms` (50 by default); absent is silent, only a nonzero invalid value logs.
+  - `covered`: carried as data only; no verdict or page uses it.
+- `target_ms` also sets the Discord adaptive gate's base per package (`alertgate` `PackageBase`, built
+  in `cmd/worker` config load). Events, ledger, SLA credits and incidents use the same value through the
   same rollup (`SLO.ForPackage`); the card/page text uses `SLO.DegradedThresholdFor`.
-- **Nothing is overridden in any live config yet.** The example configs set `residential` 1000,
-  `residential-lite` 1000, `mobile` 2000, `mobile_usa` 2000 (examples only).
-- `config/worker.example.json` has example probe entries for those four products
-  (`${RESI_PROXY_URL}`, `${LITE_PROXY_URL}`, `${MOBILE_PROXY_URL}`, `${MOBILE_US_PROXY_URL}`; names taken
-  from the zest env template). They are not in the live worker config.
-- The credit port in `flash-staff-dash` does not yet read `package_degraded_ms`, so **do not set per-package
-  overrides in a live config until it does.**
+- **Alt merge (website only, `internal/slo` `MergeAlts`).** Per product, vantage and minute the
+  short-key row wins; otherwise the alt-key row is used; never both. Identity pairs (`alt == short`,
+  e.g. `mobile` in the examples; `isp` has `alt: null`) are no-ops. Chained aliases, an alt used by two entries, alts
+  failing `pkgRe` and empty names stop the website and the worker at startup (`slo.CheckPackages`, called by both binaries; an empty name fails at parse in `Package.UnmarshalJSON`).
+  The worker does not merge yet: its thresholds key on the short key only, so rows still stored under
+  an alt key keep the global threshold until the worker moves to the real keys (KAN-412, linked to KAN-403).
+- The example configs list nine products. Examples set `target_ms` 50 for the first five, 1000 for
+  `residential` and `residential-lite`, 2000 for `mobile` and `mobile_usa`.
+- `config/worker.example.json` has example probe entries (`targets`) for residential, residential-lite,
+  mobile and mobile_usa (`${RESI_PROXY_URL}`, `${LITE_PROXY_URL}`, `${MOBILE_PROXY_URL}`,
+  `${MOBILE_US_PROXY_URL}`; names taken from the zest env template). They are not in the live worker config.
+- The credit port in `flash-staff-dash` does not yet read the per-package thresholds, so **do not set
+  `target_ms` overrides in a live config until it does.**
 
 ### Known gaps
 
-- No browser test has been run for the layout or the JavaScript; 500 px width is unverified.
+- No browser test has been run for the layout or the JavaScript; the card layout (chip wrap, split
+  bar, status alignment) has not been checked in a browser at 500 px.
+- The worker does not merge alt keys yet (KAN-412), see Per-package configuration.
+- The live `/opt/flashproxy/sla` `website.json` and `worker.json` still need the `packages` list; they
+  must be restarted and checked at deploy.
 - Phase 2 (Cloudflare caching) is not set up.
 - The threshold text for the four new products is accurate only once their probes exist and their
   thresholds are set in the live configs.
