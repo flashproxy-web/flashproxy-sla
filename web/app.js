@@ -1,116 +1,198 @@
-// Status page: per product, show the BEST vantage by default, with chips to
-// switch vantages. One /api/overview call drives the top section.
-let overview = null;
-const vantageSel = {}; // package -> chosen vantage (sticky across refreshes)
-let selected = null; // package shown in the latency chart
-let curMin = 60;
+// One script for three pages. Each page's init runs only when its own root
+// element exists, so no page fetches or sets timers for another:
+//   "/"          #components  -> cards from /api/overview (best vantage by default)
+//   "/<package>" #detail      -> response-time chart + scenarios for one package
+//   "/incidents" #inc-filter  -> client-side package filter
 
 function fmt(v) { return (v == null || isNaN(v)) ? "—" : Math.round(v); }
-function shortV(v) { return v.replace(/^aws-/, ""); }
-
-function vantageOf(c) {
-  const want = vantageSel[c.package] || c.default_vantage;
-  return c.vantages.find((v) => v.vantage === want) ||
-         c.vantages.find((v) => v.vantage === c.default_vantage) ||
-         c.vantages[0];
+function shortV(v) { return String(v).replace(/^aws-/, ""); }
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
+function isVisible() { return document.visibilityState === "visible"; }
 
-function barTitle(b) {
-  const t = new Date(b.t * 1000).toLocaleTimeString();
-  if (b.status === "no_data" || !b.samples) return t + " · no data";
-  return `${t} · ${b.status} · ${Math.round(b.response_ms_avg)}ms round-trip · ${Math.round(b.success_pct)}% ok · n=${Math.round(b.samples)}`;
-}
+// ---------------------------------------------------------------- index "/"
 
-async function loadOverview() {
-  let d;
-  try { d = await (await fetch("api/overview")).json(); } catch (e) { return; }
-  overview = d;
-  document.getElementById("updated").textContent =
-    "updated " + new Date(d.generated_at).toLocaleTimeString();
+function initIndex(host) {
+  const vantageSel = {}; // package -> chosen vantage (sticky across refreshes)
+  const cards = new Map(); // package -> { el, sig }
+  let overview = null;
+  let ssrCleared = false;
 
-  const banner = document.getElementById("banner");
-  banner.dataset.status = d.overall.status;
-  document.getElementById("banner-text").textContent = d.overall.label;
+  // The displayed vantage, or undefined when the package has no vantages at all.
+  function vantageOf(c) {
+    const vs = c.vantages || [];
+    const want = vantageSel[c.package] || c.default_vantage;
+    return vs.find((v) => v.vantage === want) ||
+           vs.find((v) => v.vantage === c.default_vantage) ||
+           vs[0];
+  }
 
-  renderComponents();
-  if (!selected && d.components && d.components.length) selectComponent(d.components[0].package);
-}
+  function barTitle(b) {
+    const t = new Date(b.t * 1000).toLocaleTimeString();
+    if (b.status === "no_data" || !b.samples) return t + " · no data";
+    return `${t} · ${b.status} · ${Math.round(b.response_ms_avg)}ms round-trip · ${Math.round(b.success_pct)}% ok · n=${Math.round(b.samples)}`;
+  }
 
-function renderComponents() {
-  const d = overview;
-  if (!d) return;
-  const win = d.window_minutes || 90;
-  const host = document.getElementById("components");
-  host.innerHTML = "";
+  // Screen-reader text for one bar: minute, status in words, response time.
+  function barLabel(b) {
+    const t = new Date(b.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    if (b.status === "no_data" || !b.samples) return t + ", no data";
+    return `${t}, ${String(b.status).replace(/_/g, " ")}, ${Math.round(b.response_ms_avg)} ms`;
+  }
 
-  (d.components || []).forEach((c) => {
-    const v = vantageOf(c);
-    vantageSel[c.package] = v.vantage;
-
-    const row = document.createElement("div");
-    row.className = "comp" + (c.package === selected ? " sel" : "");
-    row.dataset.pkg = c.package;
-
-    const bars = v.bars.map((b) =>
-      `<i class="bar" data-status="${b.status}" title="${barTitle(b).replace(/"/g, "&quot;")}"></i>`
+  function cardHTML(c, v, win) {
+    const status = v ? v.status : "no_data";
+    // Display only: the newest minute is often still filling in, so drop that one
+    // bar when it is no_data. Verdicts and uptime come from the server unchanged.
+    const bars = ((v ? v.bars : c.bars) || []).slice();
+    if (bars.length && bars[bars.length - 1].status === "no_data") bars.pop();
+    const barsHTML = bars.map((b) =>
+      `<i class="bar" role="img" aria-label="${esc(barLabel(b))}" data-status="${esc(b.status)}" title="${esc(barTitle(b))}"></i>`
     ).join("");
 
-    // vantage chips (best marked, selected highlighted)
-    const chips = c.vantages.map((vv) => {
-      const cls = "vchip" + (vv.vantage === v.vantage ? " sel" : "") +
-                  (vv.vantage === c.default_vantage ? " best" : "");
+    const chips = (c.vantages || []).map((vv) => {
+      const on = v && vv.vantage === v.vantage;
+      const best = vv.vantage === c.default_vantage;
+      const cls = "vchip" + (on ? " sel" : "") + (best ? " best" : "");
       const med = vv.status === "no_data" ? "—" : fmt(vv.response_ms_avg) + "ms";
-      const star = vv.vantage === c.default_vantage ? "★ " : "";
-      return `<button class="${cls}" data-pkg="${c.package}" data-v="${vv.vantage}" data-status="${vv.status}">${star}${shortV(vv.vantage)} ${med}</button>`;
+      const title = `${vv.status.replace("_", " ")} · ${(vv.success_pct ?? 0).toFixed(1)}% ok · n=${fmt(vv.samples)}/min`;
+      return `<button type="button" class="${cls}" data-v="${esc(vv.vantage)}" data-status="${esc(vv.status)}" ` +
+             `aria-pressed="${on ? "true" : "false"}" title="${esc(title)}">${best ? "★ " : ""}${esc(shortV(vv.vantage))} ${med}</button>`;
     }).join("");
 
-    row.innerHTML =
-      `<div class="comp-top">` +
-        `<span class="comp-name">${c.package}</span>` +
-        `<span class="comp-stat" data-status="${v.status}">${v.status.replace("_", " ")}</span>` +
+    const uptime = v ? v.uptime_pct : c.uptime_pct;
+    const deg = (typeof c.degraded_ms === "number") ? `Degraded above ${c.degraded_ms} ms` : "";
+    return `<div class="comp-top">` +
+        `<span class="sq" data-status="${esc(status)}" aria-hidden="true"></span>` +
+        `<a class="comp-name" href="/${encodeURIComponent(c.package)}">${esc(c.package)}</a>` +
+        (chips ? `<span class="vchips">${chips}</span>` : "") +
+        `<span class="spacer"></span>` +
+        `<span class="comp-stat" data-status="${esc(status)}">${esc(status.replace("_", " "))}</span>` +
       `</div>` +
-      `<div class="metric"><span class="big">${fmt(v.response_ms_avg)}</span>` +
-        `<span class="unit">ms response · via ${shortV(v.vantage)}</span></div>` +
-      `<div class="vchips">${chips}</div>` +
-      `<div class="bars">${bars}</div>` +
+      `<div class="bars">${barsHTML}</div>` +
       `<div class="comp-bot">` +
         `<span class="left">${win}m ago</span>` +
-        `<span class="mid">${(v.success_pct ?? 0).toFixed(1)}% ok · n=${fmt(v.samples)}/min</span>` +
-        `<span class="right">uptime ${(v.uptime_pct ?? 100).toFixed(1)}% · now</span>` +
+        `<span class="mid">${deg}</span>` +
+        `<span class="right">uptime ${(uptime ?? 100).toFixed(1)}% · now</span>` +
       `</div>`;
+  }
 
-    row.onclick = () => selectComponent(c.package);
-    host.appendChild(row);
+  // Rebuild only the cards whose data (or chosen vantage) changed, and put keyboard
+  // focus back on the same control when the focused card had to be rebuilt.
+  function renderComponents() {
+    if (!overview) return;
+    const win = overview.window_minutes || 90;
+    const comps = overview.components || [];
+    if (!ssrCleared) { host.textContent = ""; ssrCleared = true; } // drop the server-rendered rows once
+    const seen = new Set();
+
+    comps.forEach((c, i) => {
+      seen.add(c.package);
+      const v = vantageOf(c);
+      if (v) vantageSel[c.package] = v.vantage;
+      const sig = JSON.stringify([c, v ? v.vantage : "", win]);
+
+      let card = cards.get(c.package);
+      if (!card) {
+        const el = document.createElement("div");
+        el.className = "comp";
+        el.dataset.pkg = c.package;
+        card = { el, sig: null };
+        cards.set(c.package, card);
+      }
+      if (card.sig !== sig) {
+        const act = document.activeElement;
+        let focus = null;
+        if (act && card.el.contains(act)) {
+          focus = act.classList.contains("vchip") ? { v: act.dataset.v } : { name: true };
+        }
+        card.el.innerHTML = cardHTML(c, v, win);
+        card.sig = sig;
+        if (focus) {
+          const target = focus.name
+            ? card.el.querySelector(".comp-name")
+            : Array.from(card.el.querySelectorAll(".vchip")).find((b) => b.dataset.v === focus.v);
+          if (target) target.focus();
+        }
+      }
+      if (host.children[i] !== card.el) host.insertBefore(card.el, host.children[i] || null);
+    });
+
+    cards.forEach((card, pkg) => {
+      if (!seen.has(pkg)) { card.el.remove(); cards.delete(pkg); }
+    });
+  }
+
+  // One delegated handler (survives re-renders). A chip only switches the reading
+  // shown on its card; it sits above the card link and never navigates.
+  host.addEventListener("click", (e) => {
+    const chip = e.target.closest(".vchip");
+    if (chip && host.contains(chip)) {
+      const row = chip.closest(".comp");
+      if (row && row.dataset.pkg) {
+        vantageSel[row.dataset.pkg] = chip.dataset.v;
+        renderComponents();
+      }
+      return;
+    }
+    // The bars sit above the stretched link (to keep their tooltips), so follow
+    // the card's link for pointer clicks on them.
+    const bars = e.target.closest(".bars");
+    if (bars && host.contains(bars)) {
+      const link = bars.closest(".comp").querySelector(".comp-name");
+      if (link) window.location.assign(link.href);
+    }
   });
 
-  // chip clicks switch vantage without selecting the component for the chart
-  host.querySelectorAll(".vchip").forEach((b) => {
-    b.onclick = (e) => {
-      e.stopPropagation();
-      vantageSel[b.dataset.pkg] = b.dataset.v;
-      renderComponents();
-      if (b.dataset.pkg === selected) loadSeries();
-    };
-  });
+  let loading = false;
+  async function loadOverview() {
+    if (loading) return;
+    loading = true;
+    let d;
+    try {
+      const r = await fetch("/api/overview");
+      if (!r.ok) throw new Error("http " + r.status);
+      d = await r.json();
+    } catch (e) { return; } finally { loading = false; }
+    overview = d;
+
+    const updated = document.getElementById("updated");
+    if (updated) updated.textContent = "updated " + new Date(d.generated_at).toLocaleTimeString();
+    const banner = document.getElementById("banner");
+    if (banner && d.overall) {
+      banner.dataset.status = d.overall.status;
+      const bt = document.getElementById("banner-text");
+      if (bt) bt.textContent = d.overall.label;
+    }
+    renderComponents();
+  }
+
+  loadOverview();
+  setInterval(() => { if (isVisible()) loadOverview(); }, 15000);
+  document.addEventListener("visibilitychange", () => { if (isVisible()) loadOverview(); });
 }
 
-function selectComponent(pkg) {
-  selected = pkg;
-  document.querySelectorAll(".comp").forEach((el) => el.classList.toggle("sel", el.dataset.pkg === pkg));
-  loadSeries();
+function initMeta(box) {
+  (async () => {
+    let d;
+    try {
+      const r = await fetch("/api/meta");
+      if (!r.ok) throw new Error("http " + r.status);
+      d = await r.json();
+    } catch (e) { return; }
+    const p = d.public_clickhouse || {};
+    box.innerHTML =
+      `Query the same data this page is built from — ClickHouse HTTP, read-only, capped concurrency:<br><br>` +
+      `host&nbsp;&nbsp;&nbsp; <b>${esc(p.url || "—")}</b><br>` +
+      `db&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>${esc(p.db || "—")}</b><br>` +
+      `user&nbsp;&nbsp;&nbsp; <b>${esc(p.user || "—")}</b><br>` +
+      `pass&nbsp;&nbsp;&nbsp; <b>${esc(p.password || "—")}</b><br><br>` +
+      `<span class="muted">${esc(p.note || "")}</span>`;
+  })();
 }
 
-async function loadSeries() {
-  if (!selected) return;
-  const v = vantageSel[selected] || "";
-  document.getElementById("metrics-title").textContent = `response time · via proxy vs direct · ${selected} · via ${shortV(v)}`;
-  let d;
-  try {
-    d = await (await fetch(`api/series?package=${encodeURIComponent(selected)}&minutes=${curMin}&vantage=${encodeURIComponent(v)}`)).json();
-  } catch (e) { return; }
-  drawChart(d.series || {});
-  loadScenarios(selected, v);
-}
+// ------------------------------------------------------- detail "/<package>"
 
 const SERIES_STYLE = {
   connect: { label: "via proxy", color: "#2f9e44" },
@@ -132,14 +214,9 @@ const SCN_KPI = {
   long_session: (s) => `${fmt(s.success_pct)}% held · ${fmt(s.total_ms_median / 1000)}s`,
 };
 
-async function loadScenarios(pkg, vantage) {
-  let d;
-  try {
-    d = await (await fetch(`api/scenarios?package=${encodeURIComponent(pkg)}&vantage=${encodeURIComponent(vantage)}`)).json();
-  } catch (e) { return; }
+function renderScenarios(host, list) {
   const by = {};
-  (d.scenarios || []).forEach((s) => { by[s.scenario] = s; });
-  const host = document.getElementById("scenarios");
+  (list || []).forEach((s) => { by[s.scenario] = s; });
   host.innerHTML = SCN_ORDER.map((name) => {
     const p = by[name];                  // via proxy
     const dr = by[name + "_direct"];     // direct baseline (no proxy)
@@ -154,7 +231,7 @@ async function loadScenarios(pkg, vantage) {
       // hop (dial_ms) PLUS the proxy->target establishment (connect_ms); the direct
       // baseline pays only its own connect. So overhead = (proxy dial+connect) - direct connect.
       if (have && haveD && name !== "streaming" && name !== "large_object") {
-        const d = Math.round((p.connect_ms_avg + (p.dial_ms_avg || 0)) - dr.connect_ms_avg);
+        const d = Math.round((+p.connect_ms_avg + (+p.dial_ms_avg || 0)) - +dr.connect_ms_avg);
         sub += `<div class="scn-delta">proxy ${d >= 0 ? "+" : ""}${d}ms</div>`;
       }
     }
@@ -164,70 +241,174 @@ async function loadScenarios(pkg, vantage) {
   }).join("");
 }
 
-function drawChart(series) {
-  const svg = document.getElementById("chart");
-  const W = 880, H = 220, pad = 38;
+// The SVG holds only lines (it stretches to the box); every label is an HTML
+// element positioned in % over it, so text is never distorted.
+function drawChart(svg, labels, legend, series) {
+  const W = 1000, H = 220;
   const names = Object.keys(series).filter((n) => series[n] && series[n].length);
+  labels.textContent = "";
+  const label = (cls, text, style) => {
+    const el = document.createElement("span");
+    el.className = cls;
+    el.textContent = text;
+    Object.assign(el.style, style || {});
+    labels.appendChild(el);
+  };
   if (!names.length) {
-    svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" fill="#9aa195" text-anchor="middle" font-size="12">no data yet</text>`;
-    document.getElementById("chart-legend").innerHTML = "&nbsp;";
+    svg.innerHTML = "";
+    label("empty", "no data yet");
+    legend.innerHTML = "&nbsp;";
     return;
   }
   const allT = [], allY = [];
   names.forEach((n) => series[n].forEach((p) => { allT.push(+p.t); allY.push(+p.value); }));
   const minX = Math.min(...allT), maxX = Math.max(...allT);
   const maxY = Math.max(10, Math.ceil(Math.max(...allY) * 1.25));
-  const X = (t) => pad + (maxX === minX ? 0 : (t - minX) / (maxX - minX)) * (W - 2 * pad);
-  const Y = (v) => H - pad - (v / maxY) * (H - 2 * pad);
+  const X = (t) => (maxX === minX ? 0 : (t - minX) / (maxX - minX)) * W;
+  const Y = (v) => H - (v / maxY) * H;
   const mid = maxY / 2;
 
+  const grid = [[0, "#d7dcd2"], [mid, "#eceee9"], [maxY, "#eceee9"]].map(([v, c]) =>
+    `<line x1="0" y1="${Y(v)}" x2="${W}" y2="${Y(v)}" stroke="${c}" vector-effect="non-scaling-stroke"/>`
+  ).join("");
   const paths = names.map((n) => {
     const color = (SERIES_STYLE[n] || {}).color || "#888";
     const line = series[n].map((p, i) => (i ? "L" : "M") + X(+p.t).toFixed(1) + " " + Y(+p.value).toFixed(1)).join(" ");
-    return `<path d="${line}" fill="none" stroke="${color}" stroke-width="1.5"/>`;
+    return `<path d="${line}" fill="none" stroke="${color}" stroke-width="1.5" vector-effect="non-scaling-stroke"/>`;
   }).join("");
+  svg.innerHTML = grid + paths;
 
-  svg.innerHTML =
-    `<line x1="${pad}" y1="${Y(0)}" x2="${W - pad}" y2="${Y(0)}" stroke="#d7dcd2"/>` +
-    `<line x1="${pad}" y1="${Y(mid)}" x2="${W - pad}" y2="${Y(mid)}" stroke="#eceee9"/>` +
-    `<line x1="${pad}" y1="${Y(maxY)}" x2="${W - pad}" y2="${Y(maxY)}" stroke="#eceee9"/>` +
-    `<text x="6" y="${Y(maxY) + 4}" fill="#9aa195" font-size="10">${maxY}ms</text>` +
-    `<text x="6" y="${Y(mid) + 4}" fill="#9aa195" font-size="10">${Math.round(mid)}</text>` +
-    `<text x="6" y="${Y(0) + 4}" fill="#9aa195" font-size="10">0</text>` +
-    paths;
+  label("yl", maxY + " ms", { top: "0%" });
+  label("yl", String(Math.round(mid)), { top: "50%" });
+  label("yl", "0", { top: "100%" });
+  const tf = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  label("xl", tf(minX), { left: "0" });
+  label("xl end", tf(maxX));
 
   // legend: colored swatch + latest value per series
-  document.getElementById("chart-legend").innerHTML = names.map((n) => {
-    const st = SERIES_STYLE[n] || { label: n, color: "#888" };
+  legend.innerHTML = names.map((n) => {
+    const st = SERIES_STYLE[n] || { label: esc(n), color: "#888" };
     const pts = series[n];
     const last = pts[pts.length - 1];
     return `<span style="color:${st.color}">■</span> ${st.label} <b>${Math.round(+last.value)}ms</b>`;
   }).join(" &nbsp;&nbsp; ");
 }
 
-async function loadMeta() {
-  let d;
-  try { d = await (await fetch("api/meta")).json(); } catch (e) { return; }
-  const p = d.public_clickhouse || {};
-  document.getElementById("public-box").innerHTML =
-    `Query the same data this page is built from — ClickHouse HTTP, read-only, capped concurrency:<br><br>` +
-    `host&nbsp;&nbsp;&nbsp; <b>${p.url || "—"}</b><br>` +
-    `db&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; <b>${p.db || "—"}</b><br>` +
-    `user&nbsp;&nbsp;&nbsp; <b>${p.user || "—"}</b><br>` +
-    `pass&nbsp;&nbsp;&nbsp; <b>${p.password || "—"}</b><br><br>` +
-    `<span class="muted">${p.note || ""}</span>`;
+function initDetail(root) {
+  const pkg = root.dataset.pkg;
+  if (!pkg) return;
+  const svg = document.getElementById("chart");
+  const labels = document.getElementById("chart-labels");
+  const legend = document.getElementById("chart-legend");
+  const scnHost = document.getElementById("scenarios");
+  const note = document.getElementById("detail-note");
+  if (!svg || !labels || !legend || !scnHost) return;
+
+  let vantage = root.dataset.vantage || ""; // "" = all vantages
+  let minutes = 60;
+  let ctl = null; // in-flight request, if any
+
+  // load aborts whatever is in flight and fetches the current range + vantage.
+  async function load() {
+    if (ctl) ctl.abort();
+    const mine = ctl = new AbortController();
+    const q = `package=${encodeURIComponent(pkg)}&vantage=${encodeURIComponent(vantage)}`;
+    try {
+      const [sr, cr] = await Promise.all([
+        fetch(`/api/series?${q}&minutes=${minutes}`, { signal: mine.signal }),
+        fetch(`/api/scenarios?${q}`, { signal: mine.signal }),
+      ]);
+      if (!sr.ok || !cr.ok) throw new Error("http " + sr.status + "/" + cr.status);
+      const s = await sr.json(), c = await cr.json();
+      if (mine !== ctl) return; // superseded while reading the body
+      drawChart(svg, labels, legend, s.series || {});
+      renderScenarios(scnHost, c.scenarios);
+      if (note) note.hidden = true;
+    } catch (e) {
+      if (mine !== ctl) return; // aborted by a newer load: not an error
+      if (note) note.hidden = false;
+    } finally {
+      if (mine === ctl) ctl = null;
+    }
+  }
+
+  // Range / vantage changes reload at once but leave the 30 s timer alone.
+  root.querySelectorAll("#ranges button").forEach((b) => {
+    b.addEventListener("click", () => {
+      root.querySelectorAll("#ranges button").forEach((x) => {
+        x.classList.toggle("active", x === b);
+        x.setAttribute("aria-pressed", x === b ? "true" : "false");
+      });
+      minutes = +b.dataset.min;
+      load();
+    });
+  });
+  root.querySelectorAll("#detail-vantages .vchip").forEach((b) => {
+    b.addEventListener("click", () => {
+      root.querySelectorAll("#detail-vantages .vchip").forEach((x) => {
+        x.classList.toggle("sel", x === b);
+        x.setAttribute("aria-pressed", x === b ? "true" : "false");
+      });
+      vantage = b.dataset.v;
+      load();
+    });
+  });
+
+  load();
+  setInterval(() => { if (isVisible() && !ctl) load(); }, 30000);
+  document.addEventListener("visibilitychange", () => { if (isVisible() && !ctl) load(); });
 }
 
-document.querySelectorAll("#ranges button").forEach((b) => {
-  b.onclick = () => {
-    document.querySelectorAll("#ranges button").forEach((x) => x.classList.remove("active"));
-    b.classList.add("active");
-    curMin = +b.dataset.min;
-    loadSeries();
-  };
-});
+// ------------------------------------------------------------- "/incidents"
 
-loadMeta();
-loadOverview();
-setInterval(loadOverview, 15000);
-setInterval(loadSeries, 30000);
+function initIncidentFilter(bar) {
+  const chips = Array.from(bar.querySelectorAll("button[data-pkg]"));
+  const rows = Array.from(document.querySelectorAll(".inc[data-pkg]"));
+  const list = document.getElementById("inc-list");
+  const count = document.getElementById("inc-count");
+  const empty = document.getElementById("inc-empty");
+
+  function apply() {
+    const on = new Set(chips.filter((c) => c.getAttribute("aria-pressed") === "true").map((c) => c.dataset.pkg));
+    let n = 0;
+    rows.forEach((r) => {
+      const show = on.size === 0 || on.has(r.dataset.pkg);
+      r.hidden = !show;
+      if (show) n++;
+    });
+    if (count) count.textContent = `${n} incident${n === 1 ? "" : "s"}`;
+    const none = rows.length > 0 && n === 0;
+    if (empty) empty.hidden = !none;
+    if (list) list.hidden = none;
+  }
+
+  chips.forEach((c) => {
+    c.addEventListener("click", () => {
+      c.setAttribute("aria-pressed", c.getAttribute("aria-pressed") === "true" ? "false" : "true");
+      apply();
+    });
+  });
+
+  // ?package=<name> pre-selects that chip, only when it is one of the chips. The
+  // value is only ever compared, never written into the page.
+  let want = null;
+  try { want = new URLSearchParams(window.location.search).get("package"); } catch (e) { want = null; }
+  if (want) {
+    const chip = chips.find((c) => c.dataset.pkg === want);
+    if (chip) chip.setAttribute("aria-pressed", "true");
+  }
+  apply();
+}
+
+// --------------------------------------------------------------------- boot
+
+(function boot() {
+  const comps = document.getElementById("components");
+  if (comps) initIndex(comps);
+  const pub = document.getElementById("public-box");
+  if (pub) initMeta(pub);
+  const detail = document.getElementById("detail");
+  if (detail) initDetail(detail);
+  const filter = document.getElementById("inc-filter");
+  if (filter) initIncidentFilter(filter);
+})();

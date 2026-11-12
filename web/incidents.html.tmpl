@@ -8,7 +8,7 @@
   <link rel="canonical" href="{{.SiteURL}}/incidents" />
   <meta name="robots" content="index,follow,max-image-preview:large" />
   <meta name="theme-color" content="#0d1117" />
-  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="FlashProxy Status" />
   <meta property="og:title" content="FlashProxy Status — Past Incidents" />
@@ -17,7 +17,7 @@
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:title" content="FlashProxy — Past Incidents" />
   <meta name="twitter:description" content="Proxy downtime &amp; degradation history, independently verifiable." />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/style.css" />
   <script type="application/ld+json">{{.JSONLD}}</script>
 </head>
 <body>
@@ -35,9 +35,15 @@
     </section>
 
     {{if .Incidents}}
-    <section class="incidents">
+    {{if .Packages}}
+    <div class="inc-filter" id="inc-filter" role="group" aria-label="Filter incidents by package">
+      {{range .Packages}}<button type="button" class="fchip" aria-pressed="false" data-pkg="{{.}}">{{.}}</button>
+      {{end}}
+    </div>
+    {{end}}
+    <section class="incidents" id="inc-list">
       {{range .Incidents}}
-      <div class="inc" data-status="{{.Severity}}">
+      <div class="inc" data-status="{{.Severity}}" data-pkg="{{.Package}}">
         <div class="inc-top">
           <span class="inc-pkg">{{.Package}}</span>
           <span class="comp-stat" data-status="{{.Severity}}">{{.SeverityLabel}}</span>
@@ -55,7 +61,8 @@
       </div>
       {{end}}
     </section>
-    <p class="inc-note">{{.Total}} incident{{if ne .Total 1}}s{{end}} in the last {{.WindowDays}} days &middot; computed from the public probe data by the same cross-vantage rollup that drives SLA credits &middot; reproducible via <a href="/api/meta">/api/meta</a> + the public database.</p>
+    <p class="inc-empty" id="inc-empty" hidden>No incidents for the selected packages.</p>
+    <p class="inc-note"><span id="inc-count">{{.Total}} incident{{if ne .Total 1}}s{{end}}</span> in the last {{.WindowDays}} days &middot; computed from the public probe data by the same cross-vantage rollup that drives SLA credits &middot; reproducible via <a href="/api/meta">/api/meta</a> + the public database.</p>
     {{else}}
     <div class="banner" data-status="operational">
       <span class="dot"></span>
@@ -69,5 +76,6 @@
       <a href="https://github.com/flashproxy-web/flashproxy-sla">source</a>
     </footer>
   </div>
+  <script src="/app.js"></script>
 </body>
 </html>

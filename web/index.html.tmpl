@@ -8,7 +8,7 @@
   <link rel="canonical" href="{{.SiteURL}}/" />
   <meta name="robots" content="index,follow,max-image-preview:large" />
   <meta name="theme-color" content="#0d1117" />
-  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="FlashProxy Status" />
   <meta property="og:title" content="FlashProxy Status — Live Proxy Uptime &amp; Latency" />
@@ -17,7 +17,7 @@
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:title" content="FlashProxy Status" />
   <meta name="twitter:description" content="Live proxy uptime &amp; latency, measured from multiple regions." />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="/style.css" />
   <script type="application/ld+json">{{.JSONLD}}</script>
 </head>
 <body>
@@ -39,35 +39,25 @@
       <a class="banner-link" href="/incidents">Incident history &rarr;</a>
     </div>
 
-    <section class="components" id="components">
-      {{range .Products}}
-      <div class="comp">
-        <div class="comp-top"><span class="comp-name">{{.Name}}</span><span class="comp-stat" data-status="{{.Status}}">{{.StatusLabel}}</span></div>
-        <div class="metric"><span class="big">{{.AvgMs}}</span><span class="unit">ms response · via {{.Vantage}}</span></div>
-      </div>
-      {{end}}
-    </section>
-
-    <div class="legend">
-      <span><i class="sw" data-status="operational"></i> operational</span>
-      <span><i class="sw" data-status="degraded"></i> degraded</span>
-      <span><i class="sw" data-status="down"></i> down</span>
-      <span><i class="sw" data-status="no_data"></i> no data</span>
+    <div class="legend" aria-label="Status colours">
+      <span><i class="sq" data-status="operational"></i> operational</span>
+      <span><i class="sq" data-status="degraded"></i> degraded</span>
+      <span><i class="sq" data-status="down"></i> down</span>
+      <span><i class="sq" data-status="no_data"></i> no data</span>
     </div>
 
-    <section class="metrics">
-      <div class="metrics-head">
-        <span id="metrics-title">response time · via proxy vs direct — select a component</span>
-        <span class="ranges" id="ranges">
-          <button data-min="60" class="active">60m</button>
-          <button data-min="360">6h</button>
-          <button data-min="1440">24h</button>
-        </span>
+    <section class="components" id="components">
+      {{range .Products}}
+      <div class="comp" data-pkg="{{.Name}}">
+        <div class="comp-top">
+          <span class="sq" data-status="{{.Status}}" aria-hidden="true"></span>
+          <a class="comp-name" href="/{{.Name}}">{{.Name}}</a>
+          <span class="spacer"></span>
+          <span class="comp-stat" data-status="{{.Status}}">{{.StatusLabel}}</span>
+        </div>
+        <div class="comp-bot"><span class="left">{{.AvgMs}} ms response · via {{.Vantage}}</span><span class="right">Degraded above {{.DegradedMs}} ms</span></div>
       </div>
-      <svg id="chart" viewBox="0 0 880 220" preserveAspectRatio="none" role="img"></svg>
-      <div class="chart-legend" id="chart-legend">&nbsp;</div>
-      <div class="scn-head">archetype scenarios <span class="muted">· last 10m · via proxy vs direct baseline</span></div>
-      <div id="scenarios" class="scenarios-grid"></div>
+      {{end}}
     </section>
 
     <section class="metrics" id="public-access">
@@ -97,6 +87,6 @@
       <a href="https://github.com/flashproxy-web/flashproxy-sla">source</a>
     </footer>
   </div>
-  <script src="app.js"></script>
+  <script src="/app.js"></script>
 </body>
 </html>

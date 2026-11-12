@@ -31,7 +31,9 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
-.wrap { max-width: 920px; margin: 0 auto; padding: 32px 20px 48px; }
+[hidden] { display: none !important; }
+
+.wrap { max-width: 920px; margin: 0 auto; padding: 32px 16px 48px; }
 
 /* header */
 .head {
@@ -44,7 +46,7 @@ html, body {
 
 /* overall banner */
 .banner {
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px;
   margin: 20px 0; padding: 14px 16px;
   border: 1px solid var(--line-strong); border-left-width: 3px;
 }
@@ -67,14 +69,36 @@ html, body {
 /* components */
 .components { border: 1px solid var(--line); border-bottom: none; }
 .comp {
+  position: relative; /* anchor for the stretched name link */
   padding: 14px 16px; border-bottom: 1px solid var(--line);
-  background: var(--panel); cursor: pointer;
+  background: var(--panel);
 }
-.comp.sel { background: #fbfcfa; }
 .comp:hover { background: #fafbf8; }
 
-.comp-top { display: flex; justify-content: space-between; align-items: baseline; }
-.comp-name { font-weight: 600; }
+.comp-top { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.comp-top .spacer { flex: 1 1 0; }
+.comp-top .vchips { margin: 0; }
+.comp-name { font-weight: 600; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
+.comp-name:hover { text-decoration: underline; }
+/* stretched link: the whole card opens the package page */
+.comp-name::after { content: ""; position: absolute; inset: 0; }
+.comp-name:focus-visible { outline: none; }
+.comp-name:focus-visible::after { outline: 2px solid var(--ink); outline-offset: -2px; }
+
+/* status square: colour + glyph, never colour alone */
+.sq {
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 16px; height: 16px; font-size: 11px; font-weight: 700; line-height: 1;
+  color: #fff; background: var(--nd); font-style: normal;
+}
+.sq[data-status="operational"] { background: var(--op); }
+.sq[data-status="operational"]::before { content: "\2713"; }
+.sq[data-status="degraded"] { background: var(--deg); }
+.sq[data-status="degraded"]::before { content: "!"; }
+.sq[data-status="down"] { background: var(--dn); }
+.sq[data-status="down"]::before { content: "\2715"; }
+.sq[data-status="no_data"] { background: var(--nd); color: var(--ink); }
+.sq[data-status="no_data"]::before { content: "?"; }
 .comp-stat { font-size: 11px; text-transform: lowercase; letter-spacing: .04em; }
 .comp-stat[data-status="operational"] { color: var(--op); }
 .comp-stat[data-status="degraded"]    { color: var(--deg); }
@@ -82,7 +106,12 @@ html, body {
 .comp-stat[data-status="no_data"]     { color: var(--muted); }
 
 /* uptime bars */
-.bars { display: flex; gap: 2px; margin: 10px 0 8px; height: 34px; align-items: stretch; }
+/* above the stretched link so the per-minute tooltips still show; a click on the
+   bars follows the card link (app.js) */
+.bars {
+  display: flex; gap: 2px; margin: 10px 0 8px; height: 34px; align-items: stretch;
+  position: relative; z-index: 1; cursor: pointer;
+}
 .bar { flex: 1 1 0; min-width: 0; background: var(--nd); }
 .bar[data-status="operational"] { background: var(--op); }
 .bar[data-status="degraded"]    { background: var(--deg); }
@@ -90,17 +119,19 @@ html, body {
 .bar[data-status="no_data"]     { background: var(--nd); }
 
 .comp-bot {
-  display: flex; justify-content: space-between; gap: 12px;
-  color: var(--muted); font-size: 11px;
+  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 12px;
+  color: var(--muted); font-size: 11px; margin-top: 8px;
 }
+.bars + .comp-bot { margin-top: 0; }
 .comp-bot .mid { text-align: center; flex: 1; }
 .comp-bot .right { text-align: right; white-space: nowrap; }
 
 /* legend */
 .legend {
-  display: flex; gap: 18px; flex-wrap: wrap;
-  margin: 14px 2px 0; color: var(--muted); font-size: 11px;
+  display: flex; gap: 8px 18px; flex-wrap: wrap;
+  margin: 0 2px 12px; color: var(--muted); font-size: 11px;
 }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i.sw { display: inline-block; width: 10px; height: 10px; vertical-align: -1px; margin-right: 2px; }
 .sw[data-status="operational"] { background: var(--op); }
 .sw[data-status="degraded"]    { background: var(--deg); }
@@ -134,11 +165,27 @@ html, body {
   text-transform: uppercase; letter-spacing: .04em;
 }
 .inc-note { color: var(--muted); font-size: 11px; margin: 12px 2px 0; }
+.inc-note a { color: var(--muted); }
+.inc-empty { margin: 12px 2px 0; padding: 14px 16px; border: 1px solid var(--line); background: var(--panel); color: var(--muted); }
+
+/* incidents package filter: toggle chips, dimmed = off, highlighted = on */
+.inc-filter { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 0; }
+.fchip {
+  font: inherit; font-size: 11px; cursor: pointer;
+  background: transparent; color: var(--muted); opacity: .6;
+  border: 1px solid var(--line-strong); border-radius: 0; padding: 3px 9px;
+}
+.fchip:hover { opacity: 1; }
+.fchip[aria-pressed="true"] {
+  opacity: 1; color: var(--ink); font-weight: 600;
+  border-color: var(--ink); background: var(--panel);
+}
+.fchip[aria-pressed="true"]::before { content: "\2713\00a0"; }
 
 /* metrics panel */
 .metrics { margin-top: 30px; border: 1px solid var(--line); background: var(--panel); }
 .metrics-head {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex; flex-wrap: wrap; gap: 6px 10px; justify-content: space-between; align-items: center;
   padding: 10px 14px; border-bottom: 1px solid var(--line);
   color: var(--muted); font-size: 12px;
 }
@@ -148,24 +195,32 @@ html, body {
   padding: 2px 8px; margin-left: 5px; cursor: pointer;
 }
 .ranges button.active { color: var(--ink); border-color: var(--ink); }
-#chart { display: block; width: 100%; height: 220px; padding: 8px 0; }
+/* chart: the SVG stretches (preserveAspectRatio=none), so axis labels are HTML
+   overlays positioned in %, not SVG <text> (which would stretch too) */
+.chart-box { position: relative; height: 220px; margin: 14px 14px 26px 52px; }
+#chart { display: block; position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.chart-labels { position: absolute; inset: 0; pointer-events: none; color: #6c7268; font-size: 10px; }
+.chart-labels .yl { position: absolute; right: 100%; margin-right: 6px; transform: translateY(-50%); white-space: nowrap; }
+.chart-labels .xl { position: absolute; top: 100%; margin-top: 5px; white-space: nowrap; }
+.chart-labels .xl.end { right: 0; }
+.chart-labels .empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; }
 .chart-legend { padding: 0 14px 12px; color: var(--muted); font-size: 11px; }
+.vchips.detail-chips { padding: 10px 14px 0; margin: 0; }
+.detail-note { padding: 0 14px 12px; color: var(--muted); font-size: 11px; }
 
 /* footer */
 .foot { margin-top: 26px; color: var(--muted); font-size: 11px; text-align: center; }
 .foot a { color: var(--muted); }
 
 /* public data access box */
-.public-box { padding: 12px 14px; font-size: 12px; color: var(--ink); line-height: 1.8; }
+.public-box { padding: 12px 14px; font-size: 12px; color: var(--ink); line-height: 1.8; overflow-wrap: anywhere; }
 .public-box b { font-weight: 600; }
 .public-box .muted { color: var(--muted); }
 
-/* per-product headline metric + vantage chips */
-.metric { margin: 10px 0 6px; display: flex; align-items: baseline; gap: 8px; }
-.metric .big { font-size: 26px; font-weight: 700; }
-.metric .unit { color: var(--muted); font-size: 11px; }
+/* vantage chips */
 .vchips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 10px; }
 .vchip {
+  position: relative; z-index: 1; /* above the card's stretched link */
   font: inherit; font-size: 11px; cursor: pointer;
   background: transparent; color: var(--muted);
   border: 1px solid var(--line-strong); border-radius: 0; padding: 2px 8px;
@@ -175,7 +230,7 @@ html, body {
 .vchip.best { font-weight: 600; }
 .vchip[data-status="down"] { color: var(--dn); }
 .vchip[data-status="degraded"] { color: var(--deg); }
-.vchip[data-status="no_data"] { color: var(--nd); }
+.vchip[data-status="no_data"] { color: var(--muted); }
 
 /* archetype scenarios grid */
 .scn-head { padding: 12px 14px 6px; border-top: 1px solid var(--line); font-size: 12px; color: var(--ink); }

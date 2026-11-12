@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{.Name}} — FlashProxy status</title>
+  <meta name="description" content="Response time through the proxy vs direct, per vantage, and scenario results for the FlashProxy {{.Name}} product." />
+  <link rel="canonical" href="{{.SiteURL}}/{{.Package}}" />
+  <meta name="robots" content="index,follow,max-image-preview:large" />
+  <meta name="theme-color" content="#0d1117" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="FlashProxy Status" />
+  <meta property="og:title" content="{{.Name}} — FlashProxy status" />
+  <meta property="og:description" content="Response time and scenario results for the FlashProxy {{.Name}} product, measured continuously." />
+  <meta property="og:url" content="{{.SiteURL}}/{{.Package}}" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="{{.Name}} — FlashProxy status" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="head">
+      <div class="brand"><a href="/" class="plain">flashproxy<span class="slash">/</span>status</a></div>
+    </header>
+
+    <nav class="subnav"><a href="/">&larr; Live status</a> &middot; <a href="/sla">100% Uptime SLA</a></nav>
+
+    <section class="intro">
+      <h1>{{.Name}}</h1>
+      <p>Degraded above {{.DegradedMs}} ms (average above {{.DegradedMs}} ms for {{.DegradedForMin}} consecutive minutes on the best vantage)</p>
+    </section>
+
+    <section class="metrics" id="detail" data-pkg="{{.Package}}" data-vantage="{{.DefaultVantage}}">
+      <div class="metrics-head">
+        <span>response time · via proxy vs direct</span>
+        <span class="ranges" id="ranges">
+          <button type="button" data-min="60" class="active" aria-pressed="true">60m</button>
+          <button type="button" data-min="360" aria-pressed="false">6h</button>
+          <button type="button" data-min="1440" aria-pressed="false">24h</button>
+        </span>
+      </div>
+      {{if .Vantages}}
+      <div class="vchips detail-chips" id="detail-vantages">
+        {{range .Vantages}}<button type="button" class="vchip{{if .Best}} sel best{{end}}" data-v="{{.Vantage}}" aria-pressed="{{if .Best}}true{{else}}false{{end}}">{{if .Best}}★ {{end}}{{.Short}}</button>
+        {{end}}
+      </div>
+      {{end}}
+      <div class="chart-box" id="chart-box">
+        <svg id="chart" viewBox="0 0 1000 220" preserveAspectRatio="none" role="img" aria-label="Response time chart"></svg>
+        <div class="chart-labels" id="chart-labels"></div>
+      </div>
+      <div class="chart-legend" id="chart-legend">&nbsp;</div>
+      <div class="scn-head">scenarios <span class="muted">· last 10 min · via proxy vs direct</span></div>
+      <div id="scenarios" class="scenarios-grid"></div>
+      <div class="detail-note" id="detail-note" hidden>Could not load the latest data. Retrying.</div>
+    </section>
+
+    <p class="inc-note"><a href="/incidents?package={{.Package}}">Past incidents for {{.Name}} &rarr;</a></p>
+
+    <footer class="foot">
+      synthetic probes &middot; <a href="/sla" class="plain">100% Uptime SLA</a> &middot; <a href="/incidents" class="plain">past incidents</a> &middot;
+      <a href="https://github.com/flashproxy-web/flashproxy-sla">source</a>
+    </footer>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>

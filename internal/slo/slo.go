@@ -55,6 +55,12 @@ func (s SLO) ForPackage(pkg string) SLO {
 	return s
 }
 
+// DegradedThresholdFor returns the effective Degraded threshold (ms) for pkg: its
+// own entry when configured, else the global one, else the default. Display only.
+func (s SLO) DegradedThresholdFor(pkg string) float64 {
+	return s.ForPackage(pkg).withDefaults().DegradedAvgMs
+}
+
 func (s SLO) withDefaults() SLO {
 	if s.DegradedAvgMs <= 0 {
 		s.DegradedAvgMs = 50

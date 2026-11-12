@@ -67,7 +67,7 @@ type server struct {
 	tmpl    *template.Template
 	slaTmpl *template.Template
 	incTmpl *template.Template
-	static  http.Handler
+	pkgTmpl *template.Template
 
 	readyMu sync.Mutex
 	readyAt time.Time
@@ -85,7 +85,7 @@ func main() {
 		tmpl:    template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "index.html.tmpl"))),
 		slaTmpl: template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "sla.html.tmpl"))),
 		incTmpl: template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "incidents.html.tmpl"))),
-		static:  http.FileServer(http.Dir(cfg.WebDir)),
+		pkgTmpl: template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "package.html.tmpl"))),
 	}
 
 	mux := http.NewServeMux()
@@ -103,7 +103,7 @@ func main() {
 	mux.HandleFunc("/llms.txt", s.handleLLMs)
 	mux.HandleFunc("/sla", s.handleSLA)
 	mux.HandleFunc("/incidents", s.handleIncidents)
-	mux.HandleFunc("/", s.handleRoot) // SSR for "/", static for everything else
+	mux.HandleFunc("/", s.handleRoot) // SSR for "/", three static files, /<package> detail pages
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
@@ -194,6 +194,7 @@ type component struct {
 	SuccessPct     float64       `json:"success_pct"`
 	Samples        uint64        `json:"samples"`
 	UptimePct      float64       `json:"uptime_pct"`
+	DegradedMs     float64       `json:"degraded_ms"` // effective Degraded threshold (display)
 	Bars           []slo.Bar     `json:"bars"`
 	Vantages       []vantageView `json:"vantages"`
 }
@@ -235,11 +236,12 @@ func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			Package: pr.Package, Status: pr.Status, DefaultVantage: pr.BestVantage,
 			ResponseMsAvg: pr.ResponseMsAvg, SuccessPct: pr.SuccessPct,
 			Samples: pr.Samples, UptimePct: pr.UptimePct, Bars: pr.Bars, Vantages: views,
+			DegradedMs: s.cfg.SLO.DegradedThresholdFor(pr.Package),
 		})
 		statuses = append(statuses, pr.Status)
 	}
 	status, label := slo.Overall(statuses)
-	writeJSON(w, map[string]any{
+	writeJSONCache(w, "public, max-age=14", map[string]any{
 		"generated_at":   nowRFC(),
 		"window_minutes": windowMin,
 		"bucket_seconds": 60,
@@ -286,7 +288,7 @@ GROUP BY scenario, t ORDER BY scenario, t`, s.cfg.ClickHouse.DB, pkg, vantageFil
 		sc := chstore.Str(m, "scenario")
 		series[sc] = append(series[sc], map[string]any{"t": chstore.Num(m, "t"), "value": chstore.Num(m, "value")})
 	}
-	writeJSON(w, map[string]any{"package": pkg, "minutes": mins, "series": series})
+	writeJSONCache(w, "public, max-age=29", map[string]any{"package": pkg, "minutes": mins, "series": series})
 }
 
 // handleScenarios returns per-archetype-scenario stats for one package (optionally
@@ -322,7 +324,7 @@ GROUP BY scenario ORDER BY scenario`, s.cfg.ClickHouse.DB, pkg, vf)
 		s.fail(w, "scenarios query", err)
 		return
 	}
-	writeJSON(w, map[string]any{"package": pkg, "scenarios": rows})
+	writeJSONCache(w, "public, max-age=29", map[string]any{"package": pkg, "scenarios": rows})
 }
 
 func (s *server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -389,6 +391,7 @@ type idxProduct struct {
 	StatusLabel string
 	AvgMs       int
 	Vantage     string
+	DegradedMs  string // effective Degraded threshold, formatted for display
 }
 
 type idxData struct {
@@ -473,6 +476,7 @@ func (s *server) buildIndex(r *http.Request) idxData {
 		d.Products = append(d.Products, idxProduct{
 			Name: pr.Package, Status: pr.Status, StatusLabel: statusLabel[pr.Status],
 			AvgMs: int(pr.ResponseMsAvg + 0.5), Vantage: strings.TrimPrefix(pr.BestVantage, "aws-"),
+			DegradedMs: fmtMs(s.cfg.SLO.DegradedThresholdFor(pr.Package)),
 		})
 		statuses = append(statuses, pr.Status)
 	}
@@ -483,9 +487,107 @@ func (s *server) buildIndex(r *http.Request) idxData {
 	return d
 }
 
+func fmtMs(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
+
+// --- Package detail page (/<package>) ---
+
+type pkgVantage struct {
+	Vantage string
+	Short   string // "aws-" prefix stripped
+	Best    bool
+}
+
+type pkgData struct {
+	SiteURL        string
+	Package        string
+	Name           string // display name
+	DegradedMs     string
+	DegradedForMin int
+	DefaultVantage string
+	Vantages       []pkgVantage
+}
+
+// packageExists reports whether pkg has any probe row in the last 7 days. pkg must
+// already match pkgRe (no quotes), the same rule the API handlers rely on.
+func (s *server) packageExists(ctx context.Context, pkg string) (bool, error) {
+	rows, err := s.ch.QueryJSON(ctx, fmt.Sprintf(
+		`SELECT 1 AS ok FROM %s.probe_raw WHERE package = '%s' AND ts > now() - INTERVAL 7 DAY LIMIT 1`,
+		s.cfg.ClickHouse.DB, pkg))
+	if err != nil {
+		return false, err
+	}
+	return len(rows) > 0, nil
+}
+
+func (s *server) handlePackage(w http.ResponseWriter, r *http.Request, pkg string) {
+	ok, err := s.packageExists(r.Context(), pkg)
+	if err != nil {
+		s.fail(w, "package lookup", err)
+		return
+	}
+	if !ok {
+		// Well-formed name with no probe rows: cacheable 404 (header only, the
+		// lookup above still runs on every request).
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		http.NotFound(w, r)
+		return
+	}
+	d := pkgData{
+		SiteURL: s.cfg.SiteURL, Package: pkg, Name: pkg,
+		DegradedMs:     fmtMs(s.cfg.SLO.DegradedThresholdFor(pkg)),
+		DegradedForMin: s.cfg.SLO.DegradedForMin,
+	}
+	if d.DegradedForMin <= 0 {
+		d.DegradedForMin = 5 // slo's withDefaults value
+	}
+	// Vantage chips: names only, from the same rollup "/" renders. Best-effort: on
+	// error (or no recent data) the page renders without chips and charts all vantages.
+	if prs, err := slo.RollupPackages(r.Context(), s.ch, s.cfg.ClickHouse.DB, 15, s.cfg.SLO); err != nil {
+		log.Printf("package vantages: %v", err)
+	} else {
+		for _, pr := range prs {
+			if pr.Package != pkg {
+				continue
+			}
+			for _, v := range pr.Vantages {
+				best := v.Vantage == pr.BestVantage
+				if best {
+					d.DefaultVantage = v.Vantage
+				}
+				d.Vantages = append(d.Vantages, pkgVantage{Vantage: v.Vantage, Short: strings.TrimPrefix(v.Vantage, "aws-"), Best: best})
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if len(d.Vantages) > 0 {
+		w.Header().Set("Cache-Control", "public, max-age=300")
+	} else {
+		// No chips (rollup failed or had nothing for this package): do not let a
+		// cache keep the chip-less page.
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	if err := s.pkgTmpl.Execute(w, d); err != nil {
+		log.Printf("render package: %v", err)
+	}
+}
+
 func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		noCache(s.static).ServeHTTP(w, r)
+	switch p := r.URL.Path; p {
+	case "/":
+	case "/app.js", "/style.css", "/favicon.svg":
+		// Only these three files are public; the templates in web_dir are not served.
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		http.ServeFile(w, r, filepath.Join(s.cfg.WebDir, p[1:]))
+		return
+	default:
+		// Exactly one segment that is a valid package name, else 404. Dot-leading
+		// names and web_dir template names are never packages.
+		name := p[1:]
+		if !pkgRe.MatchString(name) || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".tmpl") {
+			http.NotFound(w, r)
+			return
+		}
+		s.handlePackage(w, r, name)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -533,6 +635,7 @@ type incidentsData struct {
 	SiteURL    string
 	Updated    string
 	Incidents  []incidentView
+	Packages   []string // filter chips: overview packages + any package with an incident
 	Total      int
 	WindowDays int
 	JSONLD     template.JS
@@ -591,6 +694,45 @@ func (s *server) buildIncidents(r *http.Request) incidentsData {
 		log.Printf("buildIncidents: %v", err)
 		return d
 	}
+	// Filter chips come from the overview component list (same 90 min window), so a
+	// package without incidents still gets one. Best-effort.
+	seenPkg := map[string]bool{}
+	if prs, err := slo.RollupPackages(r.Context(), s.ch, s.cfg.ClickHouse.DB, 90, s.cfg.SLO); err != nil {
+		log.Printf("buildIncidents packages: %v", err)
+	} else {
+		for _, pr := range prs {
+			if !seenPkg[pr.Package] {
+				seenPkg[pr.Package] = true
+				d.Packages = append(d.Packages, pr.Package)
+			}
+		}
+	}
+	for _, in := range incs {
+		if !seenPkg[in.Package] {
+			seenPkg[in.Package] = true
+			d.Packages = append(d.Packages, in.Package)
+		}
+	}
+	// Chip order: packages with a down incident, then degraded-only, then the rest;
+	// by name within each group, so the order is the same on every render.
+	pkgRank := map[string]int{}
+	for _, in := range incs {
+		switch in.Type {
+		case "down":
+			pkgRank[in.Package] = 2
+		case "degraded":
+			if pkgRank[in.Package] < 1 {
+				pkgRank[in.Package] = 1
+			}
+		}
+	}
+	sort.SliceStable(d.Packages, func(i, j int) bool {
+		a, b := d.Packages[i], d.Packages[j]
+		if pkgRank[a] != pkgRank[b] {
+			return pkgRank[a] > pkgRank[b]
+		}
+		return a < b
+	})
 	sort.Slice(incs, func(i, j int) bool { return incs[i].Start > incs[j].Start })
 	nowMin := time.Now().UTC().Unix()
 	nowMin -= nowMin % 60
@@ -784,16 +926,13 @@ func (s *server) handleLLMs(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "## Source\n\nThis status page is open source and fully reproducible: %s — and the metrics database is publicly readable.\n", "https://github.com/flashproxy-web/flashproxy-sla")
 }
 
-func noCache(h http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		h.ServeHTTP(w, r)
-	})
-}
+func writeJSON(w http.ResponseWriter, v any) { writeJSONCache(w, "no-cache", v) }
 
-func writeJSON(w http.ResponseWriter, v any) {
+// writeJSONCache is writeJSON with an explicit Cache-Control. It is only called on
+// success, so error responses (http.Error, s.fail) never carry a max-age.
+func writeJSONCache(w http.ResponseWriter, cacheControl string, v any) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Cache-Control", cacheControl)
 	_ = json.NewEncoder(w).Encode(v)
 }
 
