@@ -99,7 +99,8 @@ function initCards(host, only) {
   function barSeries(series) { return (Array.isArray(series) ? series : []).filter(Boolean); }
   function barsHTML(series, v) {
     const bars = barSeries(series);
-    if (bars.length && bars[bars.length - 1].status === "no_data") bars.pop();
+    // The server already drops a newest minute that has no data (the race case).
+    // Any other empty minute is a real problem and is drawn as no data.
     if (!v) {
       return bars.map((b) =>
         `<i class="bar" role="img" aria-label="${esc(barLabel(b))}" data-status="${esc(statusKey(b))}" title="${esc(barTitle(b))}"></i>`
