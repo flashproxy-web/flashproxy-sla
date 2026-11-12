@@ -193,9 +193,30 @@ Cloudflare. **Phase 2 is not set up**; the cache headers below exist for it, and
   spacer, chips, status pill, so the pill is at the right and the chips sit left of it (the server-rendered first version has no chips; `app.js` adds them). Status labels
   are padded from the left to 11 characters so they right-align; chip milliseconds are right-aligned in
   4 characters plus `ms` using non-breaking spaces (values above 9999 are shown as they are). Chips never navigate;
-  they drive the vantage filter below. The newest bar is hidden while it has no data
-  (display only; verdicts and uptime come from the server). The server renders a first version; `app.js`
-  replaces it from `/api/overview`.
+  they drive the vantage filter below. The server renders a first version; `app.js`
+  replaces it from `/api/overview`. The card code (`initCards`) is shared with the package page.
+- **Overview window (`handleOverview`, `slo.RollupPackagesTrimAlts`, `trimRollup`).** The overview fetches
+  91 minutes, classifies all 91 (every Evaluator, package and per-vantage, runs over the full 91, so a
+  degraded run starting at the window edge can differ by one block from a 90-minute fetch) and then trims
+  each package to exactly 90 blocks. If the NEWEST minute has no data (package bars), the newest block is
+  dropped, otherwise the oldest. The same block is dropped from the package bars and from every
+  vantage's bars. Status, age and uptime of the package and of each vantage are recomputed from the 90
+  kept blocks (statuses are not re-classified). Only the overview bars use this: `/api/series`,
+  `/api/scenarios`, `/incidents` (30 days), the SSR index (15 min) and the worker's Fetch are unchanged.
+  **Owner rule:** the trim is for a RACE, not for data problems. The newest minute is dropped only because
+  its data has not been filled yet. Every other empty minute is a real problem and is shown as no data,
+  never hidden: a second empty minute at the end, empty minutes earlier in the window, a vantage that was
+  down, lost connectivity, or no vantage running. The card hides no empty minute on the client (removed in
+  e872db4). Goal: the graphs show real data; any miscalculation or race must be ruled out, not papered over.
+- **Bar layout (`app.js` `barLayout` / `layoutBars`, `web/style.css`).** The card sizes its bars for
+  the series length (90). Blocks are never stretched. The block width `b` and gap `g` are whole DEVICE
+  pixels (devicePixelRatio aware) chosen from the bars container's current width: the gap is between
+  10% and 25% of the pitch `b + g` (target about 20%), and the largest `b` that fits is used. Each block is
+  placed absolutely at an exact device-pixel offset (`left`, `width` in CSS px = device px / ratio), and the
+  row is centred with an even offset on each side (computed for the full series). Sizes are recalculated on a resize (ResizeObserver on the card list plus `resize`) or when the
+  display scaling changes (`matchMedia` resolution query), not on the 15 s refresh (the layout is keyed on width, n, ratio and blocks
+  drawn). Below about 180 px (90 x 1 px + 89 x 1 px gap) the blocks fall back to 1 px and the row scrolls
+  sideways, newest block in view.
 - **Vantage filter (cards on `/`).** By default a card's bars are the PACKAGE bars and the vantage
   chips are dimmed. Clicking a chip shows that vantage's bars; clicking the active chip clears the
   filter; clicking another chip switches. With a vantage selected each bar is split vertically with no
@@ -207,10 +228,16 @@ Cloudflare. **Phase 2 is not set up**; the cache headers below exist for it, and
   package page title and heading, incident chips and rows). Routes, `data-pkg`, `?package=` and
   thresholds use the short key.
 - **`/<package>`** is a server-rendered detail page: title, canonical and og tags come from the
-  package name; response-time chart (proxy vs direct) with HTML axis labels; vantage chips; scenarios
-  (last 10 min, proxy vs direct); links to `/` and to `/incidents?package=<name>`. The intro text
-  states the full rule: average response time above N ms for 5 consecutive minutes on the best vantage.
-  It does not show the live status colour.
+  package name; the intro text states the full rule (average response time above N ms for 5 consecutive
+  minutes on the best vantage). Below it sits the same product card as `/` (`#pkg-card`, filled by
+  `initCards(pkgCard, pkg)` from `/api/overview` for this product, refreshed every 15 s), followed by a legend
+  (`ul.keys`) explaining the status squares, bar colours, vantage chips and the filter,
+  the split bar, the degraded rule, "down" and the best-vantage star. The first server-rendered version
+  contains only the name, the degraded threshold and the legend; the status square, status pill, chips,
+  bars and uptime appear once `app.js` loads. On this page the card's name is plain text (not a link) and
+  a click on the bars does nothing. Then the response-time chart (proxy vs direct) with HTML axis
+  labels, chart vantage chips and scenarios (last 10 min, proxy vs direct), unchanged; links to `/`
+  and to `/incidents?package=<name>`.
 - **Routing (`handleRoot`).** Exact routes win: `/sla`, `/incidents`, `/api/*`, `/healthz`, `/livez`,
   `/robots.txt`, `/sitemap.xml`, `/llms.txt`. Only `/app.js`, `/style.css`, `/favicon.svg` are served
   as files (`no-cache, no-store, must-revalidate`); templates are never served. Any other single
@@ -266,6 +293,10 @@ Cloudflare. **Phase 2 is not set up**; the cache headers below exist for it, and
 - No browser test has been run for the layout or the JavaScript; the card layout (chip wrap, split
   bar, status alignment) has not been checked in a browser at 500 px.
 - The worker does not merge alt keys yet (KAN-412), see Per-package configuration.
+- The bar layout (device-pixel placement, centring and the moire fix) and the package-page card have not
+  been checked in a browser.
+- The 91-minute trim is per package: each package decides on its own newest minute, so one package may
+  drop its newest block while another drops its oldest.
 - The live `/opt/flashproxy/sla` `website.json` and `worker.json` still need the `packages` list; they
   must be restarted and checked at deploy.
 - Phase 2 (Cloudflare caching) is not set up.

@@ -147,11 +147,11 @@ password hashes) — see `deploy/clickhouse-deploy-prompt.md`.
 
 ## Pages & API
 
-- **`/`** — server-rendered status page (crawlable; Organization + WebSite + FAQ JSON-LD). One card per product: display name (links to `/<package>`), vantage chips, status pill at the right; the footer reads "marked degraded above N ms". By default the bars are the package bars and the chips are dimmed; clicking a chip shows that vantage's bars (each bar split: package above, vantage below), clicking it again clears the filter.
-- **`/<package>`** — server-rendered detail page per product (chart, vantage chips, last-10-min scenarios). Unknown names (no probe rows in the last 7 days) return 404. An old key (`alt` of a product) redirects (302) to its short key.
+- **`/`** — server-rendered status page (crawlable; Organization + WebSite + FAQ JSON-LD). One card per product: display name (links to `/<package>`), vantage chips, status pill at the right; the footer reads "marked degraded above N ms". The card shows 90 one-minute blocks (the overview fetches 91 minutes and drops the newest block only if it has no data yet (a race), otherwise the oldest; every other empty minute is shown as no data, never hidden); the blocks are never stretched: their width and gap are whole device pixels chosen from the card width, and the row is centred. By default the bars are the package bars and the chips are dimmed; clicking a chip shows that vantage's bars (each bar split: package above, vantage below), clicking it again clears the filter.
+- **`/<package>`** — server-rendered detail page per product: the same product card as `/` (live, refreshed every 15 s; its name is not a link), a legend explaining the squares, bars, chips, split bar, degraded rule, "down" and the best-vantage star, then the chart, vantage chips and last-10-min scenarios. Unknown names (no probe rows in the last 7 days) return 404. An old key (`alt` of a product) redirects (302) to its short key.
 - **`/incidents`** — downtime and degradation history; client-side package filter chips.
 - **`/sla`** — server-rendered Service Level Agreement (crawlable; FAQ JSON-LD).
-- **`/api/overview`** — per-product, per-vantage status + 90-bar uptime, with the best vantage marked; each component carries `degraded_ms` (its effective Degraded threshold).
+- **`/api/overview`** — per-product, per-vantage status + 90-block uptime (91 minutes fetched, trimmed to 90 per package), with the best vantage marked; each component carries `degraded_ms` (its effective Degraded threshold).
 - **`/api/series?package=&vantage=&minutes=`** — network-RTT and proxy-connect time series.
 - **`/api/scenarios?package=&vantage=`** — per-scenario stats (proxy vs `_direct`).
 - **`/api/ledger`** — integrity-ledger chain heads + recent signed checkpoints + verify command.
