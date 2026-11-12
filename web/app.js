@@ -2,7 +2,8 @@
 // element exists, so no page fetches or sets timers for another:
 //   "/"          #components  -> cards from /api/overview (package bars; a vantage
 //                                 chip splits each bar: package above, vantage below)
-//   "/<package>" #detail      -> response-time chart + scenarios for one package
+//   "/<package>" #pkg-card    -> the same card (initCards) for this package only
+//                #detail      -> response-time chart + scenarios for one package
 //   "/incidents" #inc-filter  -> client-side package filter
 
 function fmt(v) { return (v == null || isNaN(v)) ? "—" : Math.round(v); }
@@ -25,9 +26,13 @@ const STATUS_W = 11;
 function statusField(status) { return String(status).replace(/_/g, " ").padStart(STATUS_W, NBSP); }
 function isVisible() { return document.visibilityState === "visible"; }
 
-// ---------------------------------------------------------------- index "/"
+// ------------------------------------------- cards: "/" and "/<package>"
 
-function initIndex(host) {
+// The product cards, filled from /api/overview every 15 s. only = "" on "/": one
+// card per product, each name a link to its page. only = a package key on that
+// package's page: just that card, and its name is plain text (no link).
+function initCards(host, only) {
+  only = only ? String(only) : "";
   // package -> vantage shown in the lower half of the card's bars. No entry = plain
   // package bars. Only a chip click changes it, so the 15 s refresh keeps the choice.
   const vantageSel = Object.create(null);
@@ -252,7 +257,9 @@ function initIndex(host) {
     const mid = dms > 0 ? `marked degraded above ${esc(String(+dms.toFixed(1)))} ms` : "";
     return `<div class="comp-top">` +
         `<span class="sq" data-status="${esc(status)}" aria-hidden="true"></span>` +
-        `<a class="comp-name" href="/${encodeURIComponent(c.package)}">${esc(c.display_name || c.package)}</a>` +
+        (only
+          ? `<span class="comp-name">${esc(c.display_name || c.package)}</span>`
+          : `<a class="comp-name" href="/${encodeURIComponent(c.package)}">${esc(c.display_name || c.package)}</a>`) +
         `<span class="spacer"></span>` +
         (chips ? `<span class="vchips">${chips}</span>` : "") +
         `<span class="comp-stat" data-status="${esc(status)}">${esc(statusField(status))}</span>` +
@@ -270,7 +277,11 @@ function initIndex(host) {
   function renderComponents() {
     if (!overview) return;
     const win = overview.window_minutes || 90;
-    const comps = overview.components || [];
+    const all = (Array.isArray(overview.components) ? overview.components : []).filter((c) => c && c.package);
+    const comps = only ? all.filter((c) => c.package === only) : all;
+    // Package page: the overview does not list this package (yet). Keep what is
+    // shown (the server-rendered card, or the last live one).
+    if (only && !comps.length) return;
     if (!ssrCleared) { host.textContent = ""; ssrCleared = true; } // drop the server-rendered rows once
     const seen = new Set();
 
@@ -328,12 +339,13 @@ function initIndex(host) {
       return;
     }
     // The bars sit above the stretched link (to keep their tooltips), so follow
-    // the card's link for pointer clicks on them.
+    // the card's link for pointer clicks on them (the package page's card has no
+    // link, so nothing happens there).
     const bars = e.target.closest(".bars");
     if (bars && host.contains(bars)) {
       const comp = bars.closest(".comp");
-      const link = comp ? comp.querySelector(".comp-name") : null;
-      if (link) window.location.assign(link.href);
+      const link = comp ? comp.querySelector("a.comp-name") : null;
+      if (link && link.href) window.location.assign(link.href);
     }
   });
 
@@ -347,10 +359,11 @@ function initIndex(host) {
       if (!r.ok) throw new Error("http " + r.status);
       d = await r.json();
     } catch (e) { return; } finally { loading = false; }
+    if (!d || typeof d !== "object") return;
     overview = d;
 
     const updated = document.getElementById("updated");
-    if (updated) updated.textContent = "updated " + new Date(d.generated_at).toLocaleTimeString();
+    if (updated && d && d.generated_at) updated.textContent = "updated " + new Date(d.generated_at).toLocaleTimeString();
     const banner = document.getElementById("banner");
     if (banner && d.overall) {
       banner.dataset.status = d.overall.status;
@@ -596,7 +609,9 @@ function initIncidentFilter(bar) {
 
 (function boot() {
   const comps = document.getElementById("components");
-  if (comps) initIndex(comps);
+  if (comps) initCards(comps, "");
+  const pkgCard = document.getElementById("pkg-card");
+  if (pkgCard && pkgCard.dataset.pkg) initCards(pkgCard, pkgCard.dataset.pkg);
   const pub = document.getElementById("public-box");
   if (pub) initMeta(pub);
   const detail = document.getElementById("detail");

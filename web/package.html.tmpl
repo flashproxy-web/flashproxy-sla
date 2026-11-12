@@ -31,6 +31,27 @@
       <p>Marked degraded when average response time stays above {{.DegradedMs}} ms for {{.DegradedForMin}} consecutive minutes on the best vantage.</p>
     </section>
 
+    <section class="components single" id="pkg-card" data-pkg="{{.Package}}" aria-label="{{.Name}} status">
+      <div class="comp" data-pkg="{{.Package}}">
+        <div class="comp-top">
+          <span class="comp-name">{{.Name}}</span>
+          <span class="spacer"></span>
+        </div>
+        <div class="comp-bot"><span class="mid">marked degraded above {{.DegradedMs}} ms</span></div>
+      </div>
+    </section>
+
+    <ul class="keys" aria-label="How to read the card">
+      <li><span class="k">status</span> <i class="sq" data-status="operational"></i> operational <i class="sq" data-status="degraded"></i> degraded <i class="sq" data-status="down"></i> down <i class="sq" data-status="no_data"></i> no data</li>
+      <li><span class="k">bars</span> one block per minute: <i class="sw" data-status="operational"></i> operational <i class="sw" data-status="degraded"></i> degraded <i class="sw" data-status="down"></i> down <i class="sw" data-status="no_data"></i> no data</li>
+      <li><span class="k">newest</span> the newest block is hidden while it has no data.</li>
+      <li><span class="k">chips</span> <span class="vchip dim">vantage</span> dimmed by default; a click shows that vantage's bars <span class="vchip sel">vantage</span>; a click on the active chip clears it; a click on another chip switches.</li>
+      <li><span class="k">split bar</span> <i class="bar split"><span class="half" data-status="operational"></span><span class="half van" data-status="degraded"></span></i> with a vantage selected: upper half = package status, lower half = that vantage's status (thin border).</li>
+      <li><span class="k">degraded</span> "marked degraded above {{.DegradedMs}} ms": the package is degraded when its best vantage's average response time stays above {{.DegradedMs}} ms for {{.DegradedForMin}} consecutive minutes; one vantage above {{.DegradedMs}} ms is not enough on its own.</li>
+      <li><span class="k">down</span> a minute in which no vantage can connect.</li>
+      <li><span class="k">★</span> the star on a chip marks the best vantage (lowest latency), used for the package verdict.</li>
+    </ul>
+
     <section class="metrics" id="detail" data-pkg="{{.Package}}" data-vantage="{{.DefaultVantage}}">
       <div class="metrics-head">
         <span>response time · via proxy vs direct</span>

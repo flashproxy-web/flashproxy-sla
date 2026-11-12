@@ -94,11 +94,12 @@ html, body {
 /* vantage filter: chips are dimmed until one is chosen; the chosen one is full */
 .comp-top .vchip[aria-pressed="true"] { opacity: 1; }
 .comp-name { font-weight: 600; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }
-.comp-name:hover { text-decoration: underline; }
-/* stretched link: the whole card opens the package page */
-.comp-name::after { content: ""; position: absolute; inset: 0; }
-.comp-name:focus-visible { outline: none; }
-.comp-name:focus-visible::after { outline: 2px solid var(--ink); outline-offset: -2px; }
+a.comp-name:hover { text-decoration: underline; }
+/* stretched link: the whole card opens the package page (index only; on the
+   package page the name is a plain span) */
+a.comp-name::after { content: ""; position: absolute; inset: 0; }
+a.comp-name:focus-visible { outline: none; }
+a.comp-name:focus-visible::after { outline: 2px solid var(--ink); outline-offset: -2px; }
 
 /* status square: colour + glyph, never colour alone */
 .sq {
@@ -174,6 +175,20 @@ html, body {
 .sw[data-status="degraded"]    { background: var(--deg); }
 .sw[data-status="down"]        { background: var(--dn); }
 .sw[data-status="no_data"]     { background: var(--nd); }
+
+/* package page: its own card (no link, so the bars are not clickable) and the
+   key that explains the card, one short line per item */
+.components.single { margin-top: 14px; }
+.components.single .bars { cursor: default; }
+.components.single .comp:hover { background: var(--panel); }
+.keys { list-style: none; margin: 10px 2px 0; padding: 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+.keys li { margin: 0 0 4px; }
+.keys .k { color: var(--ink); font-weight: 600; margin-right: 4px; }
+.keys .sq { width: 13px; height: 13px; font-size: 9px; vertical-align: -2px; margin-left: 4px; }
+.keys .sw { display: inline-block; width: 8px; height: 12px; vertical-align: -2px; margin-left: 4px; }
+.keys .vchip { display: inline-block; cursor: default; padding: 0 5px; font-size: 10px; }
+.keys .vchip.dim { opacity: .5; }
+.keys .bar.split { display: inline-flex; width: 8px; height: 16px; vertical-align: -4px; }
 
 /* past-incidents page */
 .subnav { margin: 12px 2px 0; font-size: 12px; color: var(--muted); }
