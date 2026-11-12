@@ -472,12 +472,12 @@ type PackageRollup struct {
 // rollupPackageSeries computes the package's authoritative CROSS-VANTAGE rollup plus
 // the per-vantage detail for the UI.
 //
-// The latency-Degraded threshold is applied ONLY to the home (lowest-latency
-// available) vantage each minute. A vantage measuring a product cross-region has a
-// geographic latency floor (e.g. ~200 ms EU→US) that would always exceed the 50 ms
-// threshold — so non-home vantages are classified on AVAILABILITY only (reachable ⇒
-// operational), never falsely "degraded". This matches the SLA, where Degraded is a
-// best-vantage concept. Down still requires unavailable-everywhere.
+// The PACKAGE's latency-Degraded verdict reads only the home (lowest-latency
+// available) vantage each minute, and Down still requires unavailable-everywhere.
+// The per-vantage detail is separate: each vantage's bars and Current show that
+// vantage's own state (its own average against the package threshold, consecutive
+// rule), so a far vantage measuring a product cross-region can read degraded there
+// while the package stays operational.
 func rollupPackageSeries(pkg string, byVantage map[string]map[int64]Minute, grid []int64, now int64, s SLO) PackageRollup {
 	s = s.ForPackage(pkg).withDefaults()
 	vans := make([]string, 0, len(byVantage))
@@ -522,10 +522,6 @@ func rollupPackageSeries(pkg string, byVantage map[string]map[int64]Minute, grid
 
 	// Package verdict + bars: Degraded on the home-vantage latency (consecutive rule).
 	cross := rollupSeries(synth, grid, now, s)
-	crossAt := make(map[int64]string, len(cross.Bars))
-	for _, b := range cross.Bars {
-		crossAt[b.T] = b.Status
-	}
 	bestVan := ""
 	for _, t := range grid { // home vantage at the most recent data minute (headline)
 		if _, ok := synth[t]; ok {
@@ -533,27 +529,22 @@ func rollupPackageSeries(pkg string, byVantage map[string]map[int64]Minute, grid
 		}
 	}
 
-	// 2) Per-vantage detail: the home vantage mirrors the package verdict (may be
-	//    Degraded); every other vantage is availability-only, so cross-region latency
-	//    never reads as degradation.
+	// 2) Per-vantage detail: every vantage shows ITS OWN state. Each one classifies
+	//    its own minutes with the same consecutive rule as the package (one Evaluator
+	//    per vantage, the package's effective SLO): down, degraded (own average above
+	//    the threshold for DegradedForMin consecutive minutes), operational or no_data.
+	//    Display detail only: the package verdict above does not read these.
 	detail := make([]VantageRollup, 0, len(vans))
 	for _, v := range vans {
 		bars := make([]Bar, len(grid))
 		var withData, down, deg int
 		var lastT int64 = -1
 		cur := Status{Status: "no_data", Vantage: v}
+		ev := NewEvaluator(s)
 		for i, t := range grid {
 			m, ok := byVantage[v][t]
-			st := "no_data"
+			st := ev.Next(ok, m.ResponseMsAvg, m.SuccessPct)
 			if ok {
-				switch {
-				case m.SuccessPct < s.DownSuccessPct:
-					st = "down"
-				case bestVanAt[t] == v:
-					st = crossAt[t] // home vantage: full verdict (may be degraded)
-				default:
-					st = "operational" // reachable but not the home vantage ⇒ not degraded
-				}
 				withData++
 				lastT = t
 				switch st {

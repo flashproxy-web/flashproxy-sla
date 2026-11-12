@@ -156,8 +156,9 @@ func TestCrossVantageDownRequiresAll(t *testing.T) {
 }
 
 // TestNonHomeVantageNotDegraded: a far vantage measuring a product cross-region (high
-// latency but reachable) must NOT be labeled degraded — only the home (lowest-latency)
-// vantage's latency feeds the Degraded verdict.
+// latency but reachable) must NOT degrade the PACKAGE — only the home (lowest-latency)
+// vantage's latency feeds the package verdict. The far vantage's own detail shows
+// its own state (degraded by the consecutive rule on its own series).
 func TestNonHomeVantageNotDegraded(t *testing.T) {
 	now := int64(1_700_000_000)
 	now -= now % 60
@@ -178,18 +179,40 @@ func TestNonHomeVantageNotDegraded(t *testing.T) {
 	for _, v := range pr.Vantages {
 		byVan[v.Vantage] = v
 	}
-	if byVan["eu"].Current.Status != "operational" {
-		t.Fatalf("far EU vantage (200ms, reachable) must be operational, got %s", byVan["eu"].Current.Status)
+	if pr.UptimePct != 100 {
+		t.Fatalf("package uptime should be 100 (far vantage does not count), got %v", pr.UptimePct)
 	}
-	if byVan["eu"].UptimePct != 100 {
-		t.Fatalf("far vantage uptime should be 100 (not degraded), got %v", byVan["eu"].UptimePct)
+	for _, b := range pr.Bars {
+		if b.Status != "operational" {
+			t.Fatalf("package bar at %d should be operational, got %s", b.T, b.Status)
+		}
+	}
+	// Far vantage, own state: 200ms on all 8 minutes -> minutes 5..8 degraded
+	// (consecutive rule), uptime = (8 - 0.5*4)/8 = 75.
+	if byVan["eu"].Current.Status != "degraded" {
+		t.Fatalf("far EU vantage (200ms sustained) shows its own state degraded, got %s", byVan["eu"].Current.Status)
+	}
+	for i, b := range byVan["eu"].Bars {
+		want := "operational"
+		if i >= testSLO.DegradedForMin-1 {
+			want = "degraded"
+		}
+		if b.Status != want {
+			t.Fatalf("far EU bar %d: got %s want %s", i, b.Status, want)
+		}
+	}
+	if byVan["eu"].UptimePct != 75 {
+		t.Fatalf("far vantage uptime: got %v want 75", byVan["eu"].UptimePct)
+	}
+	if byVan["us"].UptimePct != 100 {
+		t.Fatalf("home vantage uptime should be 100, got %v", byVan["us"].UptimePct)
 	}
 	if byVan["us"].Current.Status != "operational" {
 		t.Fatalf("home US vantage should be operational, got %s", byVan["us"].Current.Status)
 	}
 
 	// Genuine degradation: home vantage itself slow (>50ms) for the whole window ->
-	// home vantage AND package degraded; far vantage still operational.
+	// home vantage AND package degraded; far vantage degraded on its own series.
 	for _, tt := range grid {
 		bv["us"][tt] = Minute{T: tt, ResponseMsAvg: 80, SuccessPct: 100, Samples: 10}
 	}
@@ -201,8 +224,8 @@ func TestNonHomeVantageNotDegraded(t *testing.T) {
 		if v.Vantage == "us" && v.Current.Status != "degraded" {
 			t.Fatalf("home US vantage should be degraded, got %s", v.Current.Status)
 		}
-		if v.Vantage == "eu" && v.Current.Status != "operational" {
-			t.Fatalf("far EU vantage should stay operational, got %s", v.Current.Status)
+		if v.Vantage == "eu" && v.Current.Status != "degraded" {
+			t.Fatalf("far EU vantage (200ms sustained) should be degraded, got %s", v.Current.Status)
 		}
 	}
 }

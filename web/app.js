@@ -1,6 +1,7 @@
 // One script for three pages. Each page's init runs only when its own root
 // element exists, so no page fetches or sets timers for another:
-//   "/"          #components  -> cards from /api/overview (best vantage by default)
+//   "/"          #components  -> cards from /api/overview (package bars; a vantage
+//                                 chip splits each bar: package above, vantage below)
 //   "/<package>" #detail      -> response-time chart + scenarios for one package
 //   "/incidents" #inc-filter  -> client-side package filter
 
@@ -27,54 +28,100 @@ function isVisible() { return document.visibilityState === "visible"; }
 // ---------------------------------------------------------------- index "/"
 
 function initIndex(host) {
-  const vantageSel = {}; // package -> chosen vantage (sticky across refreshes)
+  // package -> vantage shown in the lower half of the card's bars. No entry = plain
+  // package bars. Only a chip click changes it, so the 15 s refresh keeps the choice.
+  const vantageSel = Object.create(null);
   const cards = new Map(); // package -> { el, sig }
   let overview = null;
   let ssrCleared = false;
 
-  // The displayed vantage, or undefined when the package has no vantages at all.
+  // The vantage the card is filtered to, or undefined when no filter is on (or
+  // the chosen vantage is not in this payload: the package bars show meanwhile).
   function vantageOf(c) {
-    const vs = c.vantages || [];
-    const want = vantageSel[c.package] || c.default_vantage;
-    return vs.find((v) => v.vantage === want) ||
-           vs.find((v) => v.vantage === c.default_vantage) ||
-           vs[0];
+    const want = vantageSel[c.package];
+    if (!want) return undefined;
+    return (c.vantages || []).find((v) => v && v.vantage === want);
   }
 
+  // Status as one of four fixed values; anything else reads as no_data.
+  function statusKey(b) {
+    const st = b ? b.status : "";
+    return st === "operational" || st === "degraded" || st === "down" ? st : "no_data";
+  }
+  function hasReading(b) { return !!b && statusKey(b) !== "no_data" && !!b.samples; }
+  function ms(b) { return Math.round(Number(b.response_ms_avg) || 0); }
+
+  // Tooltip part for one reading (fixed status words and numbers only).
+  function readingTitle(b) {
+    if (!hasReading(b)) return "no data";
+    return `${statusKey(b)} · ${ms(b)}ms round-trip · ${Math.round(Number(b.success_pct) || 0)}% ok · n=${Math.round(Number(b.samples) || 0)}`;
+  }
+  // Screen-reader part for one reading: status in words.
+  function readingWord(b) { return hasReading(b) ? statusKey(b) : "no data"; }
+
   function barTitle(b) {
-    const t = new Date(b.t * 1000).toLocaleTimeString();
-    if (b.status === "no_data" || !b.samples) return t + " · no data";
-    return `${t} · ${b.status} · ${Math.round(b.response_ms_avg)}ms round-trip · ${Math.round(b.success_pct)}% ok · n=${Math.round(b.samples)}`;
+    return new Date(b.t * 1000).toLocaleTimeString() + " · " + readingTitle(b);
   }
 
   // Screen-reader text for one bar: minute, status in words, response time.
   function barLabel(b) {
     const t = new Date(b.t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-    if (b.status === "no_data" || !b.samples) return t + ", no data";
-    return `${t}, ${String(b.status).replace(/_/g, " ")}, ${Math.round(b.response_ms_avg)} ms`;
+    return hasReading(b) ? `${t}, ${statusKey(b)}, ${ms(b)} ms` : t + ", no data";
   }
 
-  function cardHTML(c, v, win) {
-    const status = v ? v.status : "no_data";
-    // Display only: the newest minute is often still filling in, so drop that one
-    // bar when it is no_data. Verdicts and uptime come from the server unchanged.
-    const bars = ((v ? v.bars : c.bars) || []).slice();
-    if (bars.length && bars[bars.length - 1].status === "no_data") bars.pop();
-    const barsHTML = bars.map((b) =>
-      `<i class="bar" role="img" aria-label="${esc(barLabel(b))}" data-status="${esc(b.status)}" title="${esc(barTitle(b))}"></i>`
-    ).join("");
+  // One split bar: upper half = the package's minute, lower half = the chosen
+  // vantage's minute (vb). No vantage bar for that minute: both halves take the
+  // package colour and the text says so.
+  function splitBarHTML(b, vb) {
+    const t = new Date(b.t * 1000);
+    const pk = statusKey(b);
+    const vTitle = vb ? readingTitle(vb) : "no bar for this minute";
+    const vWord = vb ? readingWord(vb) : "not available";
+    const title = `${t.toLocaleTimeString()} · package ${readingTitle(b)} · vantage ${vTitle}`;
+    const label = `${t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}, package ${readingWord(b)}, vantage ${vWord}`;
+    const lower = vb
+      ? `<span class="half van" data-status="${esc(statusKey(vb))}"></span>`
+      : `<span class="half" data-status="${esc(pk)}"></span>`;
+    return `<i class="bar split" role="img" aria-label="${esc(label)}" title="${esc(title)}">` +
+      `<span class="half" data-status="${esc(pk)}"></span>${lower}</i>`;
+  }
 
-    const chips = (c.vantages || []).map((vv) => {
-      const on = v && vv.vantage === v.vantage;
+  // The package's bars as markup. With a vantage chosen (v), every bar is split:
+  // package above, that vantage below, matched by minute t.
+  // Display only: the newest minute is often still filling in, so drop that one
+  // bar when the package has no_data there. Verdicts and uptime come from the
+  // server unchanged.
+  function barsHTML(series, v) {
+    const bars = (Array.isArray(series) ? series : []).filter(Boolean);
+    if (bars.length && bars[bars.length - 1].status === "no_data") bars.pop();
+    if (!v) {
+      return bars.map((b) =>
+        `<i class="bar" role="img" aria-label="${esc(barLabel(b))}" data-status="${esc(statusKey(b))}" title="${esc(barTitle(b))}"></i>`
+      ).join("");
+    }
+    const byT = new Map();
+    (Array.isArray(v.bars) ? v.bars : []).forEach((vb) => { if (vb) byT.set(vb.t, vb); });
+    return bars.map((b) => splitBarHTML(b, byT.get(b.t))).join("");
+  }
+
+  // v = the chosen vantage (undefined = none). It only adds that vantage's lower
+  // half to each bar; the status square, the status word and the uptime are
+  // always the package's.
+  function cardHTML(c, v, win) {
+    const status = c.status || "no_data";
+    const barsMarkup = barsHTML(c.bars, v);
+
+    const chips = (c.vantages || []).filter(Boolean).map((vv) => {
+      const on = !!v && vv.vantage === v.vantage;
       const best = vv.vantage === c.default_vantage;
       const cls = "vchip" + (on ? " sel" : "") + (best ? " best" : "");
       const med = msField(vv.status === "no_data" ? null : vv.response_ms_avg);
-      const title = `${vv.status.replace("_", " ")} · ${(vv.success_pct ?? 0).toFixed(1)}% ok · n=${fmt(vv.samples)}/min`;
+      const title = `${String(vv.status).replace("_", " ")} · ${(vv.success_pct ?? 0).toFixed(1)}% ok · n=${fmt(vv.samples)}/min`;
       return `<button type="button" class="${cls}" data-v="${esc(vv.vantage)}" data-status="${esc(vv.status)}" ` +
              `aria-pressed="${on ? "true" : "false"}" title="${esc(title)}"><span class="vn">${best ? "★ " : ""}${esc(shortV(vv.vantage))}</span> <span class="vms">${med}</span></button>`;
     }).join("");
 
-    const uptime = v ? v.uptime_pct : c.uptime_pct;
+    const uptime = c.uptime_pct;
     // Footer middle slot: the package's Degraded threshold (a fixed fact about the
     // product, not a reading). Omitted when the API sends no usable value.
     const dms = Number(c.degraded_ms);
@@ -86,7 +133,7 @@ function initIndex(host) {
         (chips ? `<span class="vchips">${chips}</span>` : "") +
         `<span class="comp-stat" data-status="${esc(status)}">${esc(statusField(status))}</span>` +
       `</div>` +
-      `<div class="bars">${barsHTML}</div>` +
+      `<div class="bars">${barsMarkup}</div>` +
       `<div class="comp-bot">` +
         `<span class="left">${win}m ago</span>` +
         `<span class="mid">${mid}</span>` +
@@ -106,7 +153,6 @@ function initIndex(host) {
     comps.forEach((c, i) => {
       seen.add(c.package);
       const v = vantageOf(c);
-      if (v) vantageSel[c.package] = v.vantage;
       const sig = JSON.stringify([c, v ? v.vantage : "", win]);
 
       let card = cards.get(c.package);
@@ -140,14 +186,18 @@ function initIndex(host) {
     });
   }
 
-  // One delegated handler (survives re-renders). A chip only switches the reading
-  // shown on its card; it sits above the card link and never navigates.
+  // One delegated handler (survives re-renders). A chip filters its card's bars to
+  // that vantage; the active chip again turns the filter off; another chip
+  // switches it. It sits above the card link and never navigates.
   host.addEventListener("click", (e) => {
     const chip = e.target.closest(".vchip");
     if (chip && host.contains(chip)) {
       const row = chip.closest(".comp");
-      if (row && row.dataset.pkg) {
-        vantageSel[row.dataset.pkg] = chip.dataset.v;
+      const pkg = row ? row.dataset.pkg : "";
+      const van = chip.dataset.v;
+      if (pkg && van) {
+        if (vantageSel[pkg] === van) delete vantageSel[pkg];
+        else vantageSel[pkg] = van;
         renderComponents();
       }
       return;
@@ -156,7 +206,8 @@ function initIndex(host) {
     // the card's link for pointer clicks on them.
     const bars = e.target.closest(".bars");
     if (bars && host.contains(bars)) {
-      const link = bars.closest(".comp").querySelector(".comp-name");
+      const comp = bars.closest(".comp");
+      const link = comp ? comp.querySelector(".comp-name") : null;
       if (link) window.location.assign(link.href);
     }
   });
