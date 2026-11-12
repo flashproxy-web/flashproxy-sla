@@ -607,6 +607,117 @@ func RollupPackagesAlts(ctx context.Context, ch *chstore.Client, db string, wind
 	return out, nil
 }
 
+// RollupPackagesTrimAlts is RollupPackagesAlts for a window of exactly `blocks`
+// minute blocks chosen from blocks+1 fetched minutes (the overview: 91 fetched, 90
+// used). The grid is blocks+1 minutes ending at the start of the current minute and
+// is fetched and classified in full, so every Evaluator (package and per-vantage)
+// runs over all blocks+1 minutes; only then is each package trimmed (trimRollup).
+func RollupPackagesTrimAlts(ctx context.Context, ch *chstore.Client, db string, blocks int, s SLO, alts []Package) ([]PackageRollup, error) {
+	s = s.withDefaults()
+	data, err := fetchMinutes(ctx, ch, db, blocks+1)
+	if err != nil {
+		return nil, err
+	}
+	data = MergeAlts(data, alts)
+	now := time.Now()
+	grid := Grid(now, blocks+1)
+	out := make([]PackageRollup, 0, len(data))
+	for _, pkg := range sortedKeys(data) {
+		pr := rollupPackageSeries(pkg, data[pkg], grid, now.Unix(), s)
+		pr.Package = pkg
+		out = append(out, trimRollup(pr, blocks, now.Unix(), s.ForPackage(pkg)))
+	}
+	return out, nil
+}
+
+// trimRollup cuts an already classified rollup of blocks+1 minutes down to exactly
+// `blocks` minutes. The rule is decided once per package, on the PACKAGE bars: if the
+// newest minute has no data (no vantage reported it), the newest block is dropped;
+// otherwise the oldest block is dropped. The same block is dropped from the package
+// bars and from every vantage's bars, so all series hold the same `blocks` timestamps
+// in time order. Statuses are NOT re-classified (the consecutive-degraded run was
+// computed over the full sequence); the current status, age and uptime of the
+// package and of each vantage are recomputed from the kept bars only, so bars,
+// uptime, impact minutes, incidents (IncidentsFromBars over Bars) and status all use
+// the same blocks. A rollup that is not exactly blocks+1 long is returned as is.
+func trimRollup(pr PackageRollup, blocks int, now int64, s SLO) PackageRollup {
+	if blocks < 1 || len(pr.Bars) != blocks+1 {
+		return pr
+	}
+	s = s.withDefaults()
+	lo := 1 // newest minute has data: drop the oldest block
+	if pr.Bars[blocks].Status == "no_data" {
+		lo = 0 // newest minute has no data: drop the newest block
+	}
+	pr.Bars = pr.Bars[lo : lo+blocks : lo+blocks]
+	cur, uptime := summarizeBars(pr.Bars, now, s)
+	pr.Status, pr.ResponseMsAvg, pr.SuccessPct = cur.Status, cur.ResponseMsAvg, cur.SuccessPct
+	pr.Samples, pr.AgeSeconds, pr.UptimePct = cur.Samples, cur.AgeSeconds, uptime
+	if !barsHaveData(pr.Bars) {
+		pr.BestVantage = "" // the only data minute was the dropped one
+	}
+	vans := make([]VantageRollup, len(pr.Vantages))
+	for i, vr := range pr.Vantages {
+		if len(vr.Bars) == blocks+1 {
+			vr.Bars = vr.Bars[lo : lo+blocks : lo+blocks]
+			vr.Current, vr.UptimePct = summarizeBars(vr.Bars, now, s)
+			vr.Current.Vantage = vr.Vantage
+		}
+		vans[i] = vr
+	}
+	pr.Vantages = vans
+	return pr
+}
+
+func barsHaveData(bars []Bar) bool {
+	for _, b := range bars {
+		if b.Status != "no_data" {
+			return true
+		}
+	}
+	return false
+}
+
+// summarizeBars recomputes, from classified bars alone, what rollupSeries derives
+// while classifying: the current status (verdict at the most recent data minute, or
+// no_data if stale) and Availability% ((withData − Down − ½·Degraded) / withData).
+// A bar has data exactly when its status is not no_data.
+func summarizeBars(bars []Bar, now int64, s SLO) (Status, float64) {
+	var withData, down, deg int
+	var lastDataT int64 = -1
+	cur := Status{Status: "no_data"}
+	for _, b := range bars {
+		if b.Status == "no_data" {
+			continue
+		}
+		withData++
+		lastDataT = b.T
+		cur = Status{Status: b.Status, ResponseMsAvg: b.ResponseMsAvg, SuccessPct: b.SuccessPct, Samples: b.Samples}
+		switch b.Status {
+		case "down":
+			down++
+		case "degraded":
+			deg++
+		}
+	}
+	if lastDataT < 0 {
+		if len(bars) > 0 {
+			cur.AgeSeconds = now - bars[0].T
+		}
+	} else {
+		cur.AgeSeconds = now - lastDataT
+		if cur.AgeSeconds > s.StaleSeconds {
+			cur.Status = "no_data"
+		}
+	}
+	uptime := 100.0
+	if withData > 0 {
+		uptime = (float64(withData) - float64(down) - 0.5*float64(deg)) / float64(withData) * 100
+		uptime = float64(int(uptime*100+0.5)) / 100
+	}
+	return cur, uptime
+}
+
 // Incident is one contiguous Down or Degraded window for a package, derived from the
 // cross-vantage minute classification. This is the SAME definition the credit engine
 // (flash-staff-dash internal SLA port) uses, so the public incident history and the
