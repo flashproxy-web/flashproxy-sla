@@ -87,7 +87,10 @@ html, body {
 .comp-top .vchips { margin: 0; justify-content: flex-end; min-width: 0; }
 /* chips size to their content (no fixed width); only the ms field has a fixed
    text width (app.js msField). A chip never breaks inside; the group wraps. */
-.comp-top .vchip { flex: none; font-family: var(--mono); white-space: pre; opacity: .5; }
+.comp-top .vchip { flex: none; font-family: var(--mono); white-space: pre; opacity: .5; padding-left: .5em; padding-right: .5em; }
+/* slot for the best-vantage star: always rendered, same width whether it holds
+   "★" or a non-breaking space, so the chip text never moves when the mark does */
+.comp-top .vchip .vmark { display: inline-block; width: 2ch; text-align: left; font-weight: 600; }
 /* vantage filter: chips are dimmed until one is chosen; the chosen one is full */
 .comp-top .vchip[aria-pressed="true"] { opacity: 1; }
 .comp-name { font-weight: 600; color: var(--ink); text-decoration: none; overflow-wrap: anywhere; }

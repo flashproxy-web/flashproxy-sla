@@ -118,7 +118,7 @@ function initIndex(host) {
       const med = msField(vv.status === "no_data" ? null : vv.response_ms_avg);
       const title = `${String(vv.status).replace("_", " ")} · ${(vv.success_pct ?? 0).toFixed(1)}% ok · n=${fmt(vv.samples)}/min`;
       return `<button type="button" class="${cls}" data-v="${esc(vv.vantage)}" data-status="${esc(vv.status)}" ` +
-             `aria-pressed="${on ? "true" : "false"}" title="${esc(title)}"><span class="vn">${best ? "★ " : ""}${esc(shortV(vv.vantage))}</span> <span class="vms">${med}</span></button>`;
+             `aria-pressed="${on ? "true" : "false"}" title="${esc(title)}"><span class="vmark" aria-hidden="true">${best ? "★" : NBSP}</span><span class="vn">${esc(shortV(vv.vantage))}</span> <span class="vms">${med}</span></button>`;
     }).join("");
 
     const uptime = c.uptime_pct;
