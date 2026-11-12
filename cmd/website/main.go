@@ -18,7 +18,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,9 +56,89 @@ type Config struct {
 	PublicClickHouse publicCH `json:"public_clickhouse"`
 	SLO              slo.SLO  `json:"slo"`
 	LedgerPubKey     string   `json:"ledger_pubkey"` // base64 Ed25519 public key, published for verification
+	// Packages is the per-package configuration, one entry per product (optional):
+	// short = the internal key (URLs, data-pkg and API parameters always use it),
+	// alt = the old key its probe rows may also be stored under, name = the text
+	// shown on the site, target_ms = its Degraded threshold, covered = carried only.
+	// The site shows one product under the short key: per vantage and minute the
+	// short-key row is used when one exists, otherwise the alt-key row
+	// (slo.MergeAlts). The loader copies the list into SLO.Packages.
+	Packages []slo.Package `json:"packages"`
 }
 
-var pkgRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+// altKey returns the alternate probe key for pkg, or "" when none applies (not
+// configured, null, identical to pkg, or not a valid package name, so it is always
+// safe to place in a query the way a pkgRe-checked package is).
+func (c Config) altKey(pkg string) string {
+	p, ok := slo.FindPackage(c.Packages, pkg)
+	if !ok {
+		return ""
+	}
+	alt := p.AltKey()
+	if !pkgRe.MatchString(alt) {
+		return ""
+	}
+	return alt
+}
+
+// shortKey returns the short key that the stored key pkg is shown under: pkg
+// itself unless it is the alt of a configured pair (and not a short key itself).
+// Same pairing as slo.MergeAlts.
+func (c Config) shortKey(pkg string) string {
+	if len(c.Packages) == 0 {
+		return pkg
+	}
+	if _, ok := slo.FindPackage(c.Packages, pkg); ok {
+		return pkg
+	}
+	shorts := make([]string, 0, len(c.Packages))
+	for _, p := range c.Packages {
+		shorts = append(shorts, p.Short)
+	}
+	sort.Strings(shorts)
+	for _, short := range shorts {
+		if c.altKey(short) == pkg {
+			return short
+		}
+	}
+	return pkg
+}
+
+// checkPackageAlts validates the "packages" list (slo.CheckPackages): short keys
+// valid and unique; every non-null alt a valid package name, not the short key of
+// another entry (no chains), and not shared by two entries. Identity pairs
+// (alt == short) mean "no alt key" and are allowed.
+func checkPackageAlts(pkgs []slo.Package) error {
+	return slo.CheckPackages(pkgs)
+}
+
+// pkgWhere returns the probe_raw condition selecting pkg's rows. Without an alt
+// key it is the plain package match. With one it selects both keys, taking an
+// alt-key row only when the short key has no row for the same scenario, vantage
+// and minute within the window (the slo.MergeAlts rule, applied to raw rows).
+// The subquery's cutoff is a whole minute, so the oldest minute of the window is
+// compared in full and cannot be counted under both keys.
+// pkg must match pkgRe; window is a ClickHouse interval such as "10 MINUTE".
+func (s *server) pkgWhere(pkg, window string) string {
+	alt := s.cfg.altKey(pkg)
+	if alt == "" {
+		return fmt.Sprintf("package = '%s'", pkg)
+	}
+	return fmt.Sprintf(`(package = '%[1]s' OR (package = '%[2]s' AND (scenario, vantage, toStartOfMinute(ts)) NOT IN (
+  SELECT scenario, vantage, toStartOfMinute(ts) FROM %[3]s.probe_raw
+  WHERE package = '%[1]s' AND ts >= toStartOfMinute(now() - INTERVAL %[4]s))))`, pkg, alt, s.cfg.ClickHouse.DB, window)
+}
+
+// DisplayName returns the configured display name for pkg, or pkg itself when
+// none is set (or it is empty).
+func (c Config) DisplayName(pkg string) string {
+	if p, ok := slo.FindPackage(c.Packages, pkg); ok && p.Name != "" {
+		return p.Name
+	}
+	return pkg
+}
+
+var pkgRe = slo.PackageKeyRe // ^[a-zA-Z0-9_.-]{1,64}$
 
 type server struct {
 	cfg     Config
@@ -166,6 +245,15 @@ func loadConfig(p string) Config {
 	if c.ClickHouse.URL == "" || c.ClickHouse.User == "" || c.ClickHouse.DB == "" {
 		log.Fatalf("config: clickhouse url/db/user must be set (check for unset ${ENV})")
 	}
+	if err := checkPackageAlts(c.Packages); err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	for _, p := range c.Packages {
+		if p.TargetMs != 0 && !p.TargetValid() {
+			log.Printf("config: packages[%q]: target_ms %v is not a whole number >= 1, ignored (global degraded_avg_ms applies)", p.Short, p.TargetMs)
+		}
+	}
+	c.SLO.Packages = c.Packages
 	return c
 }
 
@@ -177,7 +265,7 @@ func (s *server) fail(w http.ResponseWriter, where string, err error) {
 }
 
 func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	rows, err := slo.Fetch(r.Context(), s.ch, s.cfg.ClickHouse.DB, s.cfg.SLO, false)
+	rows, err := slo.FetchAlts(r.Context(), s.ch, s.cfg.ClickHouse.DB, s.cfg.SLO, false, s.cfg.Packages)
 	if err != nil {
 		s.fail(w, "status query", err)
 		return
@@ -188,6 +276,7 @@ func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // component is one package: headline from its best vantage + the per-vantage detail.
 type component struct {
 	Package        string        `json:"package"`
+	DisplayName    string        `json:"display_name"` // name to show; equals Package when unmapped
 	Status         string        `json:"status"`
 	DefaultVantage string        `json:"default_vantage"`
 	ResponseMsAvg  float64       `json:"response_ms_avg"`
@@ -215,7 +304,7 @@ func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
 	// Cross-vantage rollup: a package is Down only when ALL vantages are down. The
 	// bars/status/uptime are the package-level (cross-vantage) values; per-vantage
 	// detail is still returned for the UI toggle.
-	prs, err := slo.RollupPackages(r.Context(), s.ch, s.cfg.ClickHouse.DB, windowMin, s.cfg.SLO)
+	prs, err := slo.RollupPackagesAlts(r.Context(), s.ch, s.cfg.ClickHouse.DB, windowMin, s.cfg.SLO, s.cfg.Packages)
 	if err != nil {
 		s.fail(w, "overview query", err)
 		return
@@ -233,7 +322,8 @@ func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		comps = append(comps, component{
-			Package: pr.Package, Status: pr.Status, DefaultVantage: pr.BestVantage,
+			Package: pr.Package, DisplayName: s.cfg.DisplayName(pr.Package),
+			Status: pr.Status, DefaultVantage: pr.BestVantage,
 			ResponseMsAvg: pr.ResponseMsAvg, SuccessPct: pr.SuccessPct,
 			Samples: pr.Samples, UptimePct: pr.UptimePct, Bars: pr.Bars, Vantages: views,
 			DegradedMs: s.cfg.SLO.DegradedThresholdFor(pr.Package),
@@ -276,8 +366,8 @@ func (s *server) handleSeries(w http.ResponseWriter, r *http.Request) {
   toUInt32(toUnixTimestamp(toStartOfMinute(ts))) AS t,
   round(avg(ttfb_ms), 1) AS value
 FROM %s.probe_raw
-WHERE scenario IN ('connect', 'connect_direct') AND package = '%s'%s AND ts > now() - INTERVAL %d MINUTE
-GROUP BY scenario, t ORDER BY scenario, t`, s.cfg.ClickHouse.DB, pkg, vantageFilter, mins)
+WHERE scenario IN ('connect', 'connect_direct') AND %s%s AND ts > now() - INTERVAL %d MINUTE
+GROUP BY scenario, t ORDER BY scenario, t`, s.cfg.ClickHouse.DB, s.pkgWhere(pkg, fmt.Sprintf("%d MINUTE", mins)), vantageFilter, mins)
 	rows, err := s.ch.QueryJSON(r.Context(), sql)
 	if err != nil {
 		s.fail(w, "series query", err)
@@ -317,8 +407,8 @@ func (s *server) handleScenarios(w http.ResponseWriter, r *http.Request) {
   round(avg(throughput_mbps), 1)         AS throughput_mbps_avg,
   round(quantile(0.5)(total_ms), 1)      AS total_ms_median
 FROM %s.probe_raw
-WHERE package = '%s'%s AND ts > now() - INTERVAL 10 MINUTE
-GROUP BY scenario ORDER BY scenario`, s.cfg.ClickHouse.DB, pkg, vf)
+WHERE %s%s AND ts > now() - INTERVAL 10 MINUTE
+GROUP BY scenario ORDER BY scenario`, s.cfg.ClickHouse.DB, s.pkgWhere(pkg, "10 MINUTE"), vf)
 	rows, err := s.ch.QueryJSON(r.Context(), sql)
 	if err != nil {
 		s.fail(w, "scenarios query", err)
@@ -367,9 +457,21 @@ func (s *server) handleLedger(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleMeta(w http.ResponseWriter, r *http.Request) {
+	// Per-package keys and effective Degraded thresholds, published with the global
+	// thresholds so the verdict stays reproducible from data alone.
+	type metaPkg struct {
+		Short    string  `json:"short"`
+		Alt      string  `json:"alt,omitempty"` // old key merged into short, when one applies
+		TargetMs float64 `json:"target_ms"`     // effective Degraded threshold (ms)
+	}
+	pkgs := make([]metaPkg, 0, len(s.cfg.Packages))
+	for _, p := range s.cfg.Packages {
+		pkgs = append(pkgs, metaPkg{Short: p.Short, Alt: s.cfg.altKey(p.Short), TargetMs: s.cfg.SLO.DegradedThresholdFor(p.Short)})
+	}
 	writeJSON(w, map[string]any{
 		"public_clickhouse": s.cfg.PublicClickHouse,
 		"slo":               s.cfg.SLO,
+		"packages":          pkgs,
 		"integrity": map[string]any{
 			"pubkey":            s.cfg.LedgerPubKey,
 			"ledger_table":      "sla.ledger",
@@ -386,7 +488,8 @@ func (s *server) handleMeta(w http.ResponseWriter, r *http.Request) {
 // --- SEO / GEO: server-side rendered home + crawler files ---
 
 type idxProduct struct {
-	Name        string
+	Name        string // raw package key (URL, data-pkg)
+	DisplayName string
 	Status      string
 	StatusLabel string
 	AvgMs       int
@@ -466,7 +569,7 @@ const slaJSONLD = `[
 // buildIndex computes a current snapshot (best vantage per product) for SSR.
 func (s *server) buildIndex(r *http.Request) idxData {
 	d := idxData{SiteURL: s.cfg.SiteURL, OverallStatus: "no_data", OverallLabel: "Awaiting Data", Updated: "Updated " + time.Now().UTC().Format("2006-01-02 15:04 MST"), JSONLD: template.JS(jsonLD)}
-	prs, err := slo.RollupPackages(r.Context(), s.ch, s.cfg.ClickHouse.DB, 15, s.cfg.SLO)
+	prs, err := slo.RollupPackagesAlts(r.Context(), s.ch, s.cfg.ClickHouse.DB, 15, s.cfg.SLO, s.cfg.Packages)
 	if err != nil {
 		log.Printf("buildIndex: %v", err)
 		return d
@@ -474,7 +577,8 @@ func (s *server) buildIndex(r *http.Request) idxData {
 	statuses := []string{}
 	for _, pr := range prs {
 		d.Products = append(d.Products, idxProduct{
-			Name: pr.Package, Status: pr.Status, StatusLabel: statusLabel[pr.Status],
+			Name: pr.Package, DisplayName: s.cfg.DisplayName(pr.Package),
+			Status: pr.Status, StatusLabel: statusLabel[pr.Status],
 			AvgMs: int(pr.ResponseMsAvg + 0.5), Vantage: strings.TrimPrefix(pr.BestVantage, "aws-"),
 			DegradedMs: fmtMs(s.cfg.SLO.DegradedThresholdFor(pr.Package)),
 		})
@@ -507,12 +611,17 @@ type pkgData struct {
 	Vantages       []pkgVantage
 }
 
-// packageExists reports whether pkg has any probe row in the last 7 days. pkg must
-// already match pkgRe (no quotes), the same rule the API handlers rely on.
+// packageExists reports whether pkg has any probe row in the last 7 days, under
+// its own key or its configured alt key (packages[].alt). pkg must already match
+// pkgRe (no quotes), the same rule the API handlers rely on; altKey checks the alt.
 func (s *server) packageExists(ctx context.Context, pkg string) (bool, error) {
+	match := fmt.Sprintf("package = '%s'", pkg)
+	if alt := s.cfg.altKey(pkg); alt != "" {
+		match = fmt.Sprintf("package IN ('%s', '%s')", pkg, alt)
+	}
 	rows, err := s.ch.QueryJSON(ctx, fmt.Sprintf(
-		`SELECT 1 AS ok FROM %s.probe_raw WHERE package = '%s' AND ts > now() - INTERVAL 7 DAY LIMIT 1`,
-		s.cfg.ClickHouse.DB, pkg))
+		`SELECT 1 AS ok FROM %s.probe_raw WHERE %s AND ts > now() - INTERVAL 7 DAY LIMIT 1`,
+		s.cfg.ClickHouse.DB, match))
 	if err != nil {
 		return false, err
 	}
@@ -533,7 +642,7 @@ func (s *server) handlePackage(w http.ResponseWriter, r *http.Request, pkg strin
 		return
 	}
 	d := pkgData{
-		SiteURL: s.cfg.SiteURL, Package: pkg, Name: pkg,
+		SiteURL: s.cfg.SiteURL, Package: pkg, Name: s.cfg.DisplayName(pkg),
 		DegradedMs:     fmtMs(s.cfg.SLO.DegradedThresholdFor(pkg)),
 		DegradedForMin: s.cfg.SLO.DegradedForMin,
 	}
@@ -542,7 +651,7 @@ func (s *server) handlePackage(w http.ResponseWriter, r *http.Request, pkg strin
 	}
 	// Vantage chips: names only, from the same rollup "/" renders. Best-effort: on
 	// error (or no recent data) the page renders without chips and charts all vantages.
-	if prs, err := slo.RollupPackages(r.Context(), s.ch, s.cfg.ClickHouse.DB, 15, s.cfg.SLO); err != nil {
+	if prs, err := slo.RollupPackagesAlts(r.Context(), s.ch, s.cfg.ClickHouse.DB, 15, s.cfg.SLO, s.cfg.Packages); err != nil {
 		log.Printf("package vantages: %v", err)
 	} else {
 		for _, pr := range prs {
@@ -587,6 +696,13 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
+		// Old (alt) key of a package: temporary redirect to its short key, before
+		// the package page. Identity pairs have no alt key and are not redirected.
+		if short := s.cfg.shortKey(name); short != name {
+			w.Header().Set("Cache-Control", "no-cache")
+			http.Redirect(w, r, "/"+short, http.StatusFound)
+			return
+		}
 		s.handlePackage(w, r, name)
 		return
 	}
@@ -610,7 +726,8 @@ func (s *server) handleSLA(w http.ResponseWriter, r *http.Request) {
 // --- Past incidents (human-facing downtime/degradation history) ---
 
 type incidentView struct {
-	Package       string
+	Package       string // raw package key (data-pkg, filtering)
+	Name          string // display name
 	Severity      string // "down" | "degraded"
 	SeverityLabel string
 	Start         string // "2006-01-02 15:04 UTC"
@@ -635,10 +752,17 @@ type incidentsData struct {
 	SiteURL    string
 	Updated    string
 	Incidents  []incidentView
-	Packages   []string // filter chips: overview packages + any package with an incident
+	Packages   []string  // filter chips: overview packages + any package with an incident
+	Chips      []pkgChip // Packages in the same order, with display names
 	Total      int
 	WindowDays int
 	JSONLD     template.JS
+}
+
+// pkgChip is one filter chip: raw key for data-pkg, display name for the label.
+type pkgChip struct {
+	Package string
+	Name    string
 }
 
 const incidentsJSONLD = `[
@@ -689,7 +813,7 @@ func (s *server) buildIncidents(r *http.Request) incidentsData {
 		WindowDays: incidentsWindowMin / (24 * 60),
 		JSONLD:     template.JS(incidentsJSONLD),
 	}
-	incs, err := slo.RollupIncidents(r.Context(), s.ch, s.cfg.ClickHouse.DB, incidentsWindowMin, s.cfg.SLO)
+	incs, err := slo.RollupIncidentsAlts(r.Context(), s.ch, s.cfg.ClickHouse.DB, incidentsWindowMin, s.cfg.SLO, s.cfg.Packages)
 	if err != nil {
 		log.Printf("buildIncidents: %v", err)
 		return d
@@ -697,7 +821,7 @@ func (s *server) buildIncidents(r *http.Request) incidentsData {
 	// Filter chips come from the overview component list (same 90 min window), so a
 	// package without incidents still gets one. Best-effort.
 	seenPkg := map[string]bool{}
-	if prs, err := slo.RollupPackages(r.Context(), s.ch, s.cfg.ClickHouse.DB, 90, s.cfg.SLO); err != nil {
+	if prs, err := slo.RollupPackagesAlts(r.Context(), s.ch, s.cfg.ClickHouse.DB, 90, s.cfg.SLO, s.cfg.Packages); err != nil {
 		log.Printf("buildIncidents packages: %v", err)
 	} else {
 		for _, pr := range prs {
@@ -733,6 +857,9 @@ func (s *server) buildIncidents(r *http.Request) incidentsData {
 		}
 		return a < b
 	})
+	for _, p := range d.Packages {
+		d.Chips = append(d.Chips, pkgChip{Package: p, Name: s.cfg.DisplayName(p)})
+	}
 	sort.Slice(incs, func(i, j int) bool { return incs[i].Start > incs[j].Start })
 	nowMin := time.Now().UTC().Unix()
 	nowMin -= nowMin % 60
@@ -747,6 +874,7 @@ func (s *server) buildIncidents(r *http.Request) incidentsData {
 		}
 		v := incidentView{
 			Package:       in.Package,
+			Name:          s.cfg.DisplayName(in.Package),
 			Severity:      in.Type,
 			SeverityLabel: statusLabel[in.Type],
 			Start:         time.Unix(in.Start, 0).UTC().Format("2006-01-02 15:04 MST"),
@@ -789,7 +917,7 @@ func (s *server) loadStatements(ctx context.Context) []statementRow {
 	out := make([]statementRow, 0, len(rows))
 	for _, m := range rows {
 		out = append(out, statementRow{
-			pkg:    chstore.Str(m, "package"),
+			pkg:    s.cfg.shortKey(chstore.Str(m, "package")), // incidents carry the short key
 			start:  chstore.Int64(m, "pstart", &err),
 			end:    chstore.Int64(m, "pend", &err),
 			body:   chstore.Str(m, "body"),

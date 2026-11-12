@@ -96,6 +96,9 @@ type Config struct {
 	ScrapeHosts        []string    `json:"scrape_hosts"` // CONNECT targets for the scraping scenario
 	Scenarios          ScenarioCfg `json:"scenarios"`
 	Targets            []Target    `json:"targets"`
+	// Packages is the per-package list (short key, alt, name, target_ms, covered);
+	// target_ms is the package's Degraded threshold. Copied into SLO.Packages at load.
+	Packages []slo.Package `json:"packages"`
 
 	// AdaptiveAlert enables the alert-only adaptive Discord threshold for
 	// operational<->degraded (internal/alertgate). Absent/false = unchanged behaviour.
@@ -198,19 +201,28 @@ func loadConfig(p string) Config {
 		}
 	}
 	validateConfig(c)
+	if err := slo.CheckPackages(c.Packages); err != nil {
+		log.Fatalf("config: %v", err)
+	}
+	for _, p := range c.Packages {
+		if p.TargetMs != 0 && !p.TargetValid() {
+			log.Printf("config: packages[%q]: target_ms %v is not a whole number >= 1, ignored (global degraded_avg_ms applies)", p.Short, p.TargetMs)
+		}
+	}
+	c.SLO.Packages = c.Packages
 	if c.AdaptiveAlert {
 		s, err := c.AdaptiveAlertTuning.Build(int(math.Round(c.SLO.DegradedAvgMs)))
 		if err != nil {
 			log.Fatalf("config: adaptive_alert_tuning: %v", err)
 		}
-		for pkg, ms := range c.SLO.PackageDegradedMs {
-			if ms < 1 {
+		for _, p := range c.Packages {
+			if !p.TargetValid() {
 				continue // same rule as slo.ForPackage: ignored, global threshold applies
 			}
 			if s.PackageBase == nil {
 				s.PackageBase = map[string]int{}
 			}
-			s.PackageBase[pkg] = int(math.Round(ms))
+			s.PackageBase[p.Short] = int(p.TargetMs)
 		}
 		c.adaptive = s
 	}

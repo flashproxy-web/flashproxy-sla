@@ -68,7 +68,7 @@ function initIndex(host) {
     const mid = dms > 0 ? `marked degraded above ${esc(String(+dms.toFixed(1)))} ms` : "";
     return `<div class="comp-top">` +
         `<span class="sq" data-status="${esc(status)}" aria-hidden="true"></span>` +
-        `<a class="comp-name" href="/${encodeURIComponent(c.package)}">${esc(c.package)}</a>` +
+        `<a class="comp-name" href="/${encodeURIComponent(c.package)}">${esc(c.display_name || c.package)}</a>` +
         (chips ? `<span class="vchips">${chips}</span>` : "") +
         `<span class="spacer"></span>` +
         `<span class="comp-stat" data-status="${esc(status)}">${esc(status.replace("_", " "))}</span>` +

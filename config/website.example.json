@@ -5,6 +5,17 @@
   "tls_cert_file": "",
   "tls_key_file": "",
   "ledger_pubkey": "${LEDGER_PUBKEY}",
+  "packages": [
+    { "short": "datacenter",       "alt": "dc",        "name": "Datacenter",          "target_ms": 50,   "covered": true },
+    { "short": "ipv6-datacenter",  "alt": "ipv6-dc",   "name": "IPv6 Datacenter",     "target_ms": 50,   "covered": true },
+    { "short": "isp",              "alt": null,        "name": "Shared ISP · USA",    "target_ms": 50,   "covered": true },
+    { "short": "ipv6-residential", "alt": "ipv6",      "name": "IPv6 Residential",    "target_ms": 50,   "covered": true },
+    { "short": "isp_eu",           "alt": "isp-eu",    "name": "Shared ISP · EU",     "target_ms": 50,   "covered": true },
+    { "short": "residential",      "alt": "resi",      "name": "Residential",         "target_ms": 1000, "covered": true },
+    { "short": "residential-lite", "alt": "lite",      "name": "Residential Lite",    "target_ms": 1000, "covered": true },
+    { "short": "mobile",           "alt": "mobile",    "name": "Mobile",              "target_ms": 2000, "covered": true },
+    { "short": "mobile_usa",       "alt": "mobile_us", "name": "Mobile USA",          "target_ms": 2000, "covered": true }
+  ],
   "clickhouse": {
     "url": "http://127.0.0.1:18123",
     "db": "sla",
@@ -22,12 +33,6 @@
     "degraded_avg_ms": 50,
     "degraded_for_min": 5,
     "down_success_pct": 90,
-    "stale_seconds": 120,
-    "package_degraded_ms": {
-      "residential": 1000,
-      "residential-lite": 1000,
-      "mobile": 2000,
-      "mobile_usa": 2000
-    }
+    "stale_seconds": 120
   }
 }

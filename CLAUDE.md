@@ -97,15 +97,17 @@ Three binaries, strictly separated by what they touch:
   Tunables: `adaptive_alert_tuning` (see `config/worker.example.json`).
 - **`cmd/website`** — strictly **read-only** (reader role; never writes). Hardened
   `http.Server` (timeouts, panic recovery, security headers, TLS 1.2 min); server-renders
-  `/`, `/sla`, and `/incidents` (downtime & degradation history) from Go `html/template`
+  `/`, `/<package>`, `/sla`, and `/incidents` (downtime & degradation history) from Go `html/template`
   files loaded at startup from the `web_dir` config path (`web/*.html.tmpl` — **not** embedded,
-  so the `web/` dir must ship alongside the binary); serves the JSON API; `/healthz` is a real
+  so the `web/` dir must ship alongside the binary; all four templates, including
+  `package.html.tmpl`, are parsed with `template.Must`, so the binary does not start without them);
+  serves the JSON API; `/healthz` is a real
   ClickHouse readiness check, `/livez` is liveness; publishes the public CH key + SLO thresholds
   + ledger public key at `/api/meta`; `/api/ledger` exposes chain heads + checkpoints. Generic
-  errors only (never echoes ClickHouse error text to clients). `/` falls through to a static
-  server otherwise. The `/incidents` page enumerates incidents from the **same cross-vantage
+  errors only (never echoes ClickHouse error text to clients). The `/incidents` page enumerates incidents from the **same cross-vantage
   rollup as the credit engine** and attaches optional operator-authored official statements
   (see incident statements below); it degrades gracefully when the statements table is absent.
+  See "Public site" below for routing, caching and the page behaviour.
 - **`cmd/origin`** — deterministic upstream (`/connect`, `/bytes/{n}`, `/small`, `/hold`) so
   payload metrics are pure SLA signal with no third-party variance. Bind dual-stack (`:8080`
   serves v4+v6) so IPv6 packages exercise v6 egress. `/bytes/{n}` above `-max-bytes` (default
@@ -173,6 +175,65 @@ Shared `internal/` packages:
 - **`internal/ledger`** — the hash chain (`Chain.Build`/`Commit`, `BatchHash`, `EntryHash`,
   `VerifyEntry`) and Ed25519 checkpoint sign/verify. Pure, stdlib-only, fully unit-tested
   (incl. tamper detection).
+
+## Public site (`cmd/website`, `web/`)
+
+Phase 1 (now): the site is served internally only (`127.0.0.1:8080`). Phase 2: put it behind
+Cloudflare. **Phase 2 is not set up**; the cache headers below exist for it, and Phase 1 has no CDN in front.
+
+- **`/`** is the status page: legend at the top, one card per product with a status square, the
+  name as a link to `/<package>`, vantage chips, uptime, and the footer text
+  `marked degraded above N ms` (N = that package's effective Degraded threshold). Chips only switch the
+  reading shown on the card (they never navigate). The newest bar is hidden while it has no data
+  (display only; verdicts and uptime come from the server). The server renders a first version; `app.js`
+  replaces it from `/api/overview`.
+- **`/<package>`** is a server-rendered detail page: title, canonical and og tags come from the
+  package name; response-time chart (proxy vs direct) with HTML axis labels; vantage chips; scenarios
+  (last 10 min, proxy vs direct); links to `/` and to `/incidents?package=<name>`. The intro text
+  states the full rule: average response time above N ms for 5 consecutive minutes on the best vantage.
+  It does not show the live status colour.
+- **Routing (`handleRoot`).** Exact routes win: `/sla`, `/incidents`, `/api/*`, `/healthz`, `/livez`,
+  `/robots.txt`, `/sitemap.xml`, `/llms.txt`. Only `/app.js`, `/style.css`, `/favicon.svg` are served
+  as files (`no-cache, no-store, must-revalidate`); templates are never served. Any other single
+  path segment matching `pkgRe` (`^[a-zA-Z0-9_.-]{1,64}$`) gets one primary-key-style lookup in
+  `probe_raw` (last 7 days): found = page; not found = 404 with `Cache-Control: public, max-age=3600`;
+  lookup error = 502 with no cache header. Two-segment paths, trailing slashes, names starting with `.`
+  and names ending in `.tmpl` are 404 (no lookup).
+- **Cache headers.** `/api/overview` `public, max-age=14`; `/api/series` and `/api/scenarios`
+  `public, max-age=29` (success only; errors carry no max-age); package page `public, max-age=300` when its
+  vantage chips loaded, else `no-cache`; other JSON endpoints `no-cache`. Also set in code: `/` `max-age=30`,
+  `/sla` 300, `/incidents` 180. No cookies, no `Vary`. These are meant for Phase 2.
+- **Timers (`web/app.js`).** The index refreshes `/api/overview` every 15 s; the detail page refreshes
+  series and scenarios every 30 s. Intent: only while the tab is visible. Actual: both `setInterval`s keep
+  ticking while the tab is hidden and the tick skips the request; a `visibilitychange` to visible reloads at once.
+- **`/api/overview`** components carry `degraded_ms` (the effective threshold; 50 when unset).
+- **`/incidents`**: one toggle chip per package; dimmed = not in the filter, highlighted = in it, several
+  may be on, none on = all rows. Filtering is client-side on each row's `data-pkg`. `?package=` is read
+  by the JS and used only if it matches a chip; the server ignores it. Chips are sorted down first, then
+  degraded (by whether the package has such an incident in the listed window), then the rest, by name.
+
+### Per-package Degraded thresholds
+
+- `slo.package_degraded_ms` (in the `slo` block of `worker.json` and `website.json`) maps package name to
+  its Degraded threshold in whole ms, minimum 1 (values below 1 are ignored). Unset packages use
+  `slo.degraded_avg_ms` (50 by default). Keys must match the probe `package` name exactly.
+- The same map sets the Discord adaptive gate's base per package (`alertgate` `PackageBase`, built in
+  `cmd/worker` config load). Events, ledger, SLA credits and incidents use the same value through the
+  same rollup (`SLO.ForPackage`); the card/page text uses `SLO.DegradedThresholdFor`.
+- **Nothing is overridden in any live config yet.** The example configs set `residential` 1000,
+  `residential-lite` 1000, `mobile` 2000, `mobile_usa` 2000 (examples only).
+- `config/worker.example.json` has example probe entries for those four products
+  (`${RESI_PROXY_URL}`, `${LITE_PROXY_URL}`, `${MOBILE_PROXY_URL}`, `${MOBILE_US_PROXY_URL}`; names taken
+  from the zest env template). They are not in the live worker config.
+- The credit port in `flash-staff-dash` does not yet read `package_degraded_ms`, so **do not set per-package
+  overrides in a live config until it does.**
+
+### Known gaps
+
+- No browser test has been run for the layout or the JavaScript; 500 px width is unverified.
+- Phase 2 (Cloudflare caching) is not set up.
+- The threshold text for the four new products is accurate only once their probes exist and their
+  thresholds are set in the live configs.
 
 ## ClickHouse roles (the trust boundary)
 
@@ -243,7 +304,13 @@ and website users read statements with no grant change.
   secrets are in root-only env files there (`.env`, `worker.env`, `website.env`, `ledger.env`)
   — never print, copy or commit them, and never put secrets in git.
 - **Manual deploy:** `make build` in the repo, copy the binaries and `web/` to
-  `/opt/flashproxy/sla`, restart the unit. **Config changes are hot-patched on the box**
+  `/opt/flashproxy/sla`, restart the unit. Website checklist (do not run unasked):
+  1. Build the website binary (`make website`).
+  2. Copy the whole `web/` directory, including `package.html.tmpl`, next to the binary.
+  3. Restart `sla-website` (it exits at startup if any template is missing).
+  4. Smoke test: `/`, `/<a real package>`, `/<unknown name>` (expect 404), `/app.js`, `/style.css`,
+     `/favicon.svg`, `/sla`, `/api/overview` (check `degraded_ms` is present), `/healthz`,
+     `/index.html.tmpl` (expect 404); then a browser check of `/` and a package page at 500 px wide. **Config changes are hot-patched on the box**
   (edit the live json, restart the unit), then the same change is made in whichever config
   repo is canonical (config-as-code is moving to `/root/dev/config`, zest) so a rebuild
   doesn't silently revert it.

@@ -3,7 +3,7 @@
 //
 // It never changes the SLA verdict: events, the ledger, the website and SLA credits
 // keep using the package's Degraded threshold (slo.degraded_avg_ms, or the per-package
-// value in slo.package_degraded_ms when set; this is the "base"/floor). The gate only decides whether a
+// target_ms in the "packages" list when set; this is the "base"/floor). The gate only decides whether a
 // lower-tier Discord message is sent, raises a per-package alert threshold T when a
 // package flaps into degraded too often, lowers it again on a recheck timer, and
 // emits a once-a-day summary while T is above base.

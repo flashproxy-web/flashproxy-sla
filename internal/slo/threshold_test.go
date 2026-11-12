@@ -11,10 +11,14 @@ func TestDegradedThresholdFor(t *testing.T) {
 		pkg  string
 		want float64
 	}{
-		{"no map", SLO{}, "residential", 50},
-		{"per-package entry", SLO{PackageDegradedMs: map[string]float64{"residential": 1000}}, "residential", 1000},
-		{"unlisted package", SLO{PackageDegradedMs: map[string]float64{"residential": 1000}}, "datacenter", 50},
-		{"entry below 1 ignored", SLO{PackageDegradedMs: map[string]float64{"residential": 0.4}}, "residential", 50},
+		{"no list", SLO{}, "residential", 50},
+		{"per-package entry", SLO{Packages: []Package{{Short: "residential", TargetMs: 1000}}}, "residential", 1000},
+		{"unlisted package", SLO{Packages: []Package{{Short: "residential", TargetMs: 1000}}}, "datacenter", 50},
+		{"entry without target_ms", SLO{Packages: []Package{{Short: "residential"}}}, "residential", 50},
+		{"global fallback", SLO{DegradedAvgMs: 80, Packages: []Package{{Short: "residential"}}}, "residential", 80},
+		{"not a whole number ignored", SLO{Packages: []Package{{Short: "residential", TargetMs: 1000.5}}}, "residential", 50},
+		{"alt key is not a threshold key", SLO{Packages: []Package{{Short: "residential", Alt: strp("resi"), TargetMs: 1000}}}, "resi", 50},
+		{"entry below 1 ignored", SLO{Packages: []Package{{Short: "residential", TargetMs: 0.4}}}, "residential", 50},
 	}
 	for _, c := range cases {
 		if got := c.slo.DegradedThresholdFor(c.pkg); got != c.want {
@@ -22,3 +26,5 @@ func TestDegradedThresholdFor(t *testing.T) {
 		}
 	}
 }
+
+func strp(s string) *string { return &s }

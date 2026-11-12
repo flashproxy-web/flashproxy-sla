@@ -76,7 +76,7 @@ contract can't drift:
 
 - **Available** — the `connect` scenario succeeds.
 - **Down** — a minute that is below the success threshold (`down_success_pct`, default 90) **from every vantage simultaneously**. A single-vantage failure is **not** Down (it isolates one network path, not the proxy).
-- **Degraded** — Available, but the **best vantage's average round-trip response time exceeds the product's Degraded threshold (50 ms for the original products) for 5 consecutive minutes** (and stays Degraded until it recovers). The run-up minutes before the trigger are not yet Degraded.
+- **Degraded** — Available, but the **best vantage's average round-trip response time exceeds the product's Degraded threshold (`slo.degraded_avg_ms`, 50 ms by default, unless `slo.package_degraded_ms` overrides it for that package) for 5 consecutive minutes** (and stays Degraded until it recovers). The run-up minutes before the trigger are not yet Degraded.
 - **Availability%** = (minutes with data − Down − ½·Degraded) / minutes with data × 100.
 
 The exact thresholds are published at `/api/meta`, so the verdict is reproducible from
@@ -146,9 +146,11 @@ password hashes) — see `deploy/clickhouse-deploy-prompt.md`.
 
 ## Pages & API
 
-- **`/`** — server-rendered status page (crawlable; Organization + WebSite + FAQ JSON-LD).
+- **`/`** — server-rendered status page (crawlable; Organization + WebSite + FAQ JSON-LD). One card per product; each card footer reads "marked degraded above N ms".
+- **`/<package>`** — server-rendered detail page per product (chart, vantage chips, last-10-min scenarios). Unknown names (no probe rows in the last 7 days) return 404.
+- **`/incidents`** — downtime and degradation history; client-side package filter chips.
 - **`/sla`** — server-rendered Service Level Agreement (crawlable; FAQ JSON-LD).
-- **`/api/overview`** — per-product, per-vantage status + 90-bar uptime, with the best vantage marked.
+- **`/api/overview`** — per-product, per-vantage status + 90-bar uptime, with the best vantage marked; each component carries `degraded_ms` (its effective Degraded threshold).
 - **`/api/series?package=&vantage=&minutes=`** — network-RTT and proxy-connect time series.
 - **`/api/scenarios?package=&vantage=`** — per-scenario stats (proxy vs `_direct`).
 - **`/api/ledger`** — integrity-ledger chain heads + recent signed checkpoints + verify command.
@@ -171,10 +173,13 @@ ISP_PROXY_URL='http://USER:PASS@HOST:30' docker compose --profile demo up --buil
 JSON with `${ENV}` expansion so secrets never live in the file.
 
 - `config/website.example.json` — listen addr, ClickHouse (reader) creds, the public
-  key to publish, optional TLS, `site_url`, and SLO thresholds.
+  key to publish, optional TLS, `site_url`, and SLO thresholds (`slo.package_degraded_ms` overrides
+  the Degraded threshold per package; see `CLAUDE.md`).
 - `config/worker.example.json` — vantage id, ClickHouse (writer) creds, the
   origin(s) for payload scenarios, scrape hosts, scenario intervals, and the list of
-  packages → `proxy_url` (e.g. `${ISP_PROXY_URL}`), target, and IP version.
+  packages → `proxy_url` (e.g. `${ISP_PROXY_URL}`), target, and IP version, plus the `slo` block
+  (same `package_degraded_ms` map). The example holds probe entries for residential, residential-lite,
+  mobile and mobile_usa; they are not in the live worker config.
 
 ## Deploy
 

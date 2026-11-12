@@ -27,8 +27,12 @@ package slo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/flashproxy/flashproxy-status/internal/chstore"
@@ -40,17 +44,142 @@ type SLO struct {
 	DegradedForMin int     `json:"degraded_for_min"` // consecutive over-threshold minutes that trigger Degraded
 	DownSuccessPct float64 `json:"down_success_pct"` // connect success% below which a minute is Down
 	StaleSeconds   int64   `json:"stale_seconds"`    // age of newest data beyond which status is no_data
-	// PackageDegradedMs overrides DegradedAvgMs per package (key = package name).
-	// Absent/empty = every package uses DegradedAvgMs.
-	PackageDegradedMs map[string]float64 `json:"package_degraded_ms,omitempty"`
+	// Packages is the configured package list (top-level "packages" in worker.json
+	// and website.json). It is not part of the "slo" JSON block: the config loaders
+	// copy it here so the per-package Degraded threshold (target_ms) travels with
+	// the thresholds. Nil/empty = every package uses DegradedAvgMs.
+	Packages []Package `json:"-"`
+}
+
+// PackageKeyRe is the form of a package key (short or alt).
+var PackageKeyRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+
+// Package is one entry of the "packages" config list: everything configured per
+// package in one place.
+type Package struct {
+	// Short is the internal key: probe package name, ledger, rollup, routes,
+	// data-pkg, ?package=, thresholds, alerts.
+	Short string `json:"short"`
+	// Alt is the old live key whose rows are merged into Short during the cutover
+	// overlap (MergeAlts). nil (JSON null or absent) = no alt; equal to Short = no-op.
+	Alt *string `json:"alt"`
+	// Name is the display text; empty = Short is shown.
+	Name string `json:"name,omitempty"`
+	// TargetMs is the package's Degraded threshold in whole ms. Missing, below 1 or
+	// not a whole number = ignored, the global DegradedAvgMs applies.
+	TargetMs float64 `json:"target_ms,omitempty"`
+	// Covered is carried in the data only; no verdict or page uses it yet.
+	Covered bool `json:"covered"`
+}
+
+// UnmarshalJSON decodes a list entry and rejects a name that is present but empty
+// (leave the field out to show the short key).
+func (p *Package) UnmarshalJSON(b []byte) error {
+	type plain Package
+	aux := struct {
+		*plain
+		Name *string `json:"name"`
+	}{plain: (*plain)(p)}
+	if err := json.Unmarshal(b, &aux); err != nil {
+		return err
+	}
+	if aux.Name != nil {
+		if strings.TrimSpace(*aux.Name) == "" {
+			return fmt.Errorf("packages: %q: name must not be empty (leave it out to show the short key)", p.Short)
+		}
+		p.Name = *aux.Name
+	}
+	return nil
+}
+
+// AltKey returns the package's alt key, or "" when it has none (null, empty or
+// identical to Short).
+func (p Package) AltKey() string {
+	if p.Alt == nil || *p.Alt == p.Short {
+		return ""
+	}
+	return *p.Alt
+}
+
+// TargetValid reports whether TargetMs is usable as a threshold: a whole number >= 1.
+func (p Package) TargetValid() bool {
+	return p.TargetMs >= 1 && p.TargetMs == math.Trunc(p.TargetMs)
+}
+
+// FindPackage returns the list entry whose short key is short.
+func FindPackage(pkgs []Package, short string) (Package, bool) {
+	for _, p := range pkgs {
+		if p.Short == short {
+			return p, true
+		}
+	}
+	return Package{}, false
+}
+
+// AltMap returns short key -> alt key for the entries that name an alt (identity
+// pairs included, as configured). Nil when no entry has one.
+func AltMap(pkgs []Package) map[string]string {
+	var m map[string]string
+	for _, p := range pkgs {
+		if p.Alt == nil {
+			continue
+		}
+		if m == nil {
+			m = map[string]string{}
+		}
+		m[p.Short] = *p.Alt
+	}
+	return m
+}
+
+// CheckPackages validates the "packages" list so keys and pairings are
+// unambiguous: every short key must be a valid package name and appear once;
+// every non-null alt must be a valid package name, must not be the short key of
+// another entry (no chains), and two entries must not share one alt. Identity
+// pairs (alt == short) mean "no alt key" and are allowed. target_ms is not
+// checked here: an unusable value is ignored (see Package.TargetValid).
+func CheckPackages(pkgs []Package) error {
+	shorts := map[string]bool{}
+	for i, p := range pkgs {
+		if !PackageKeyRe.MatchString(p.Short) {
+			return fmt.Errorf("packages[%d]: short key %q is not a valid package name", i, p.Short)
+		}
+		if shorts[p.Short] {
+			return fmt.Errorf("packages: short key %q is listed more than once", p.Short)
+		}
+		shorts[p.Short] = true
+	}
+	owner := map[string]string{} // alt -> the short key that names it
+	for _, p := range pkgs {
+		if p.Alt == nil {
+			continue
+		}
+		alt := *p.Alt
+		if !PackageKeyRe.MatchString(alt) {
+			return fmt.Errorf("packages[%q]: alt key %q is not a valid package name", p.Short, alt)
+		}
+		if alt == p.Short {
+			continue
+		}
+		if shorts[alt] {
+			return fmt.Errorf("packages[%q]: alt key %q is also a short key (chained pairs are not allowed)", p.Short, alt)
+		}
+		if other, ok := owner[alt]; ok {
+			return fmt.Errorf("packages: alt key %q is used by both %q and %q", alt, other, p.Short)
+		}
+		owner[alt] = p.Short
+	}
+	return nil
 }
 
 // ForPackage returns s with DegradedAvgMs replaced by the package's own threshold
-// when one is configured; otherwise s unchanged. Callers apply withDefaults after.
+// (target_ms of its "packages" entry) when one is configured; otherwise s
+// unchanged. Callers apply withDefaults after.
 func (s SLO) ForPackage(pkg string) SLO {
-	// Values below 1 ms are ignored (global threshold applies), same rule as the worker's alert gate.
-	if ms, ok := s.PackageDegradedMs[pkg]; ok && ms >= 1 {
-		s.DegradedAvgMs = ms
+	// Unusable values (below 1 ms, not whole) are ignored (global threshold
+	// applies), same rule as the worker's alert gate.
+	if p, ok := FindPackage(s.Packages, pkg); ok && p.TargetValid() {
+		s.DegradedAvgMs = p.TargetMs
 	}
 	return s
 }
@@ -276,6 +405,53 @@ func fetchMinutes(ctx context.Context, ch *chstore.Client, db string, windowMin 
 	return out, nil
 }
 
+// MergeAlts folds rows stored under a package's alternate (old) key into its short
+// (real) key, for the window in which a product's rows may sit under either key.
+// pkgs is the "packages" list; each entry with an alt is a pair. For each pair, every (vantage, minute) of the alt
+// key is moved under the short key; where the short key already has a row for the
+// same vantage and minute, the short row is kept and the alt row is dropped, so a
+// minute is never counted twice. The alt key is removed from the result. Pairs with
+// an empty or identical alt are no-ops, and an alt named by more than one short key
+// is merged into the first (by short key order) only. With no entry naming an alt
+// (nil or empty list included) the input map is returned as is. The input is not
+// modified.
+func MergeAlts(data map[string]map[string]map[int64]Minute, pkgs []Package) map[string]map[string]map[int64]Minute {
+	alts := AltMap(pkgs)
+	if len(alts) == 0 {
+		return data
+	}
+	out := make(map[string]map[string]map[int64]Minute, len(data))
+	for pkg, byVantage := range data {
+		out[pkg] = byVantage
+	}
+	used := map[string]bool{}
+	for _, short := range sortedKeys(alts) {
+		alt := alts[short]
+		if alt == "" || alt == short || used[alt] {
+			continue
+		}
+		altData, ok := data[alt]
+		if !ok {
+			continue
+		}
+		used[alt] = true
+		merged := make(map[string]map[int64]Minute, len(altData))
+		for _, src := range []map[string]map[int64]Minute{altData, data[short]} { // short last: it wins
+			for van, mins := range src {
+				if merged[van] == nil {
+					merged[van] = make(map[int64]Minute, len(mins))
+				}
+				for t, m := range mins {
+					merged[van][t] = m
+				}
+			}
+		}
+		delete(out, alt)
+		out[short] = merged
+	}
+	return out
+}
+
 // PackageRollup is the CROSS-VANTAGE rollup for one package. A minute is Down only
 // when the package is unavailable from EVERY vantage at once — a failure from a
 // single vantage (e.g. one region's network path) is NOT Down. Degraded uses the
@@ -417,11 +593,18 @@ func rollupPackageSeries(pkg string, byVantage map[string]map[int64]Minute, grid
 // RollupPackages returns the cross-vantage rollup per package (sorted). This is the
 // authoritative status/uptime used by the banner, the monitor, and SLA accounting.
 func RollupPackages(ctx context.Context, ch *chstore.Client, db string, windowMin int, s SLO) ([]PackageRollup, error) {
+	return RollupPackagesAlts(ctx, ch, db, windowMin, s, nil)
+}
+
+// RollupPackagesAlts is RollupPackages over the fetched minutes after MergeAlts
+// (alts: the "packages" list). With nil alts it is RollupPackages.
+func RollupPackagesAlts(ctx context.Context, ch *chstore.Client, db string, windowMin int, s SLO, alts []Package) ([]PackageRollup, error) {
 	s = s.withDefaults()
 	data, err := fetchMinutes(ctx, ch, db, windowMin)
 	if err != nil {
 		return nil, err
 	}
+	data = MergeAlts(data, alts)
 	now := time.Now()
 	grid := Grid(now, windowMin)
 	out := make([]PackageRollup, 0, len(data))
@@ -484,7 +667,12 @@ func IncidentsFromBars(pkg string, bars []Bar) []Incident {
 // the window, using the authoritative cross-vantage rollup — the same source and
 // algorithm as the live status and as the credit engine.
 func RollupIncidents(ctx context.Context, ch *chstore.Client, db string, windowMin int, s SLO) ([]Incident, error) {
-	prs, err := RollupPackages(ctx, ch, db, windowMin, s)
+	return RollupIncidentsAlts(ctx, ch, db, windowMin, s, nil)
+}
+
+// RollupIncidentsAlts is RollupIncidents over RollupPackagesAlts.
+func RollupIncidentsAlts(ctx context.Context, ch *chstore.Client, db string, windowMin int, s SLO, alts []Package) ([]Incident, error) {
+	prs, err := RollupPackagesAlts(ctx, ch, db, windowMin, s, alts)
 	if err != nil {
 		return nil, err
 	}
@@ -499,12 +687,18 @@ func RollupIncidents(ctx context.Context, ch *chstore.Client, db string, windowM
 // vantages are down). Used by /api/status (complete=false) and the monitor
 // (complete=true, see statuses).
 func Fetch(ctx context.Context, ch *chstore.Client, db string, s SLO, complete bool) ([]Status, error) {
+	return FetchAlts(ctx, ch, db, s, complete, nil)
+}
+
+// FetchAlts is Fetch over the fetched minutes after MergeAlts (alts: the "packages"
+// list). With nil alts it is Fetch.
+func FetchAlts(ctx context.Context, ch *chstore.Client, db string, s SLO, complete bool, alts []Package) ([]Status, error) {
 	w := s.withDefaults().DegradedForMin + 5
 	data, err := fetchMinutes(ctx, ch, db, w)
 	if err != nil {
 		return nil, err
 	}
-	return statuses(data, time.Now(), w, s, complete), nil
+	return statuses(MergeAlts(data, alts), time.Now(), w, s, complete), nil
 }
 
 // statuses reduces fetched minutes to one Status per package, as RollupPackages does.
