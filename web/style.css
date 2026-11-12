@@ -126,11 +126,22 @@ html, body {
 /* uptime bars */
 /* above the stretched link so the per-minute tooltips still show; a click on the
    bars follows the card link (app.js) */
+/* fixed whole-pixel blocks, never stretched: app.js picks the block width (--bw)
+   and the gap (--bg) from this container's width in steps (in device pixels);
+   the row is centred in the container */
 .bars {
-  display: flex; gap: 2px; margin: 10px 0 8px; height: 34px; align-items: stretch;
-  position: relative; z-index: 1; cursor: pointer;
+  display: flex; justify-content: center; margin: 10px 0 8px; height: 34px; align-items: stretch;
+  position: relative; z-index: 1; cursor: pointer; overflow: hidden;
 }
-.bar { flex: 1 1 0; min-width: 0; background: var(--nd); }
+/* narrower than the smallest row (1px blocks, 1px gaps): scroll sideways. A
+   centred flex row cannot scroll to its start, so it is left-aligned here
+   and app.js scrolls it to the newest block */
+.bars.scroll { justify-content: flex-start; overflow-x: auto; overflow-y: hidden; }
+.bar { flex: none; width: var(--bw, 1px); background: var(--nd); }
+.bar + .bar { margin-left: var(--bg, 1px); }
+/* placed by app.js: every block sits at a whole device-pixel offset (left and
+   width set inline, in fractions of a CSS pixel where the screen is scaled) */
+.bars.abs .bar { position: absolute; top: 0; height: 100%; margin-left: 0; }
 .bar[data-status="operational"] { background: var(--op); }
 .bar[data-status="degraded"]    { background: var(--deg); }
 .bar[data-status="down"]        { background: var(--dn); }

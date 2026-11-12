@@ -91,8 +91,9 @@ function initIndex(host) {
   // Display only: the newest minute is often still filling in, so drop that one
   // bar when the package has no_data there. Verdicts and uptime come from the
   // server unchanged.
+  function barSeries(series) { return (Array.isArray(series) ? series : []).filter(Boolean); }
   function barsHTML(series, v) {
-    const bars = (Array.isArray(series) ? series : []).filter(Boolean);
+    const bars = barSeries(series);
     if (bars.length && bars[bars.length - 1].status === "no_data") bars.pop();
     if (!v) {
       return bars.map((b) =>
@@ -104,12 +105,135 @@ function initIndex(host) {
     return bars.map((b) => splitBarHTML(b, byT.get(b.t))).join("");
   }
 
+  // Stepped block size for a row of n blocks in a container w pixels wide (the
+  // caller passes DEVICE pixels): whole pixels, block b and gap g. From large to small, g = max(1, round(b / 4)) (gap
+  // about 20% of the pitch b + g, accepted between 10% and 25%); the largest b
+  // whose row n*b + (n-1)*g fits wins. Below that (b = 2 and b = 1 cannot meet
+  // the ratio with a whole-pixel gap) the gap stays 1px; when even 1 + 1 does
+  // not fit, the row keeps 1 + 1 and scrolls. w = 0 (not laid out yet) gives the
+  // minimum size. Never throws.
+  function barLayout(w, n) {
+    w = Math.floor(Number(w)) || 0;
+    n = Math.max(1, Math.floor(Number(n)) || 0);
+    const total = (b, g) => n * b + (n - 1) * g;
+    for (let b = Math.floor(w / n); b >= 1; b--) {
+      const g = Math.max(1, Math.round(b * 0.25));
+      const ratio = g / (b + g);
+      if (ratio < 0.10 || ratio > 0.25) continue;
+      if (total(b, g) <= w) return { b, g, scroll: false };
+    }
+    if (total(2, 1) <= w) return { b: 2, g: 1, scroll: false };
+    return { b: 1, g: 1, scroll: w > 0 && total(1, 1) > w };
+  }
+
+  // The screen's device pixels per CSS pixel (display scaling, browser zoom).
+  function pixelRatio() {
+    const r = Number(typeof window !== "undefined" ? window.devicePixelRatio : 1);
+    return isFinite(r) && r > 0 ? r : 1;
+  }
+
+  // Size and place every card's bars in DEVICE pixels: block b and gap g are
+  // whole device pixels (barLayout on the container's width in device pixels),
+  // and each block is positioned absolutely at a whole device-pixel offset, so
+  // every block and gap is drawn the same size at any scaling or zoom. The row
+  // is centred in the container. The result is
+  // kept on the card and keyed (width, n, ratio, blocks drawn), so a data
+  // refresh with nothing changed neither recomputes nor moves anything.
+  function layoutBars() {
+    const dpr = pixelRatio();
+    cards.forEach((card) => {
+      if (!card || !card.el) return;
+      const el = card.el.querySelector(".bars");
+      if (!el) return;
+      const w = el.clientWidth || 0;
+      const n = Number(el.dataset.n) || 0;
+      if (!w || !n) return; // not laid out yet: keep the minimum / last size
+      const kids = el.children;
+      const m = kids ? kids.length : 0;
+      const wDev = Math.floor(w * dpr);
+      const key = [wDev, n, dpr, m].join(":");
+      let lay = card.lay;
+      if (lay && lay.key === key && el.dataset.lay === key) return; // already placed
+      if (!lay || lay.w !== wDev || lay.n !== n) {
+        lay = barLayout(wDev, n);
+        lay.w = wDev; lay.n = n;
+      }
+      lay.key = key; lay.dpr = dpr;
+      card.lay = lay;
+      const pitch = lay.b + lay.g;
+      // Centre the full row of n blocks: the leftover width is split evenly and
+      // the offset is a whole device pixel. The full series is used (not the m
+      // blocks drawn), so hiding the newest block moves nothing.
+      const total = n * lay.b + (n - 1) * lay.g;
+      const off = lay.scroll ? 0 : Math.max(0, Math.floor((wDev - total) / 2));
+      const width = (lay.b / dpr) + "px";
+      for (let i = 0; i < m; i++) {
+        const k = kids[i];
+        if (!k || !k.style) continue;
+        k.style.left = ((off + i * pitch) / dpr) + "px";
+        k.style.width = width;
+      }
+      el.style.setProperty("--bw", width);
+      el.style.setProperty("--bg", (lay.g / dpr) + "px");
+      el.dataset.lay = key;
+      el.classList.add("abs");
+      el.classList.toggle("scroll", !!lay.scroll);
+      if (lay.scroll) el.scrollLeft = el.scrollWidth; // newest block in view
+    });
+  }
+  let layoutQueued = false;
+  function queueLayout() {
+    if (layoutQueued) return;
+    layoutQueued = true;
+    const run = () => { layoutQueued = false; layoutBars(); };
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
+    else setTimeout(run, 50);
+  }
+  // The bars' width follows the card list's width, so one observer on the list
+  // covers every card (the bars elements themselves are replaced on re-render).
+  if (typeof ResizeObserver === "function") {
+    try { new ResizeObserver(queueLayout).observe(host); } catch (e) { /* resize listener below */ }
+  }
+  window.addEventListener("resize", queueLayout);
+  // The pixel ratio can change with no width change (window moved to another
+  // screen, zoom): a resolution query matches only the current ratio, so its
+  // change event means a new ratio. Lay out again and watch the new ratio.
+  // layoutBars also reads the ratio on every run, so a missed event is caught
+  // by the next resize or refresh.
+  function watchPixelRatio() {
+    if (typeof window.matchMedia !== "function") return;
+    try {
+      const mq = window.matchMedia(`(resolution: ${pixelRatio()}dppx)`);
+      if (!mq) return;
+      const onChange = () => {
+        if (typeof mq.removeEventListener === "function") mq.removeEventListener("change", onChange);
+        else if (typeof mq.removeListener === "function") mq.removeListener(onChange);
+        queueLayout();
+        watchPixelRatio();
+      };
+      if (typeof mq.addEventListener === "function") mq.addEventListener("change", onChange);
+      else if (typeof mq.addListener === "function") mq.addListener(onChange);
+    } catch (e) { /* layoutBars re-reads the ratio on every run */ }
+  }
+  watchPixelRatio();
+
   // v = the chosen vantage (undefined = none). It only adds that vantage's lower
   // half to each bar; the status square, the status word and the uptime are
   // always the package's.
-  function cardHTML(c, v, win) {
+  // lay = the card's last computed bar layout (none before the first draw: the
+  // stylesheet's minimum size applies until layoutBars has measured the row).
+  function cardHTML(c, v, win, lay) {
     const status = c.status || "no_data";
     const barsMarkup = barsHTML(c.bars, v);
+    // Sized for the whole series, so hiding the newest block moves nothing.
+    const nBars = barSeries(c.bars).length;
+    // lay.b / lay.g are device pixels; the markup carries them as CSS pixels for
+    // the moment before layoutBars places the blocks (same call, see renderComponents).
+    const sized = lay && lay.b >= 1 && lay.g >= 1 && lay.dpr > 0;
+    const barsAttr = ` data-n="${nBars}"` + (sized
+      ? ` style="--bw:${Number(lay.b) / lay.dpr}px;--bg:${Number(lay.g) / lay.dpr}px"`
+      : "");
+    const barsCls = "bars" + (sized && lay.scroll ? " scroll" : "");
 
     const chips = (c.vantages || []).filter(Boolean).map((vv) => {
       const on = !!v && vv.vantage === v.vantage;
@@ -133,7 +257,7 @@ function initIndex(host) {
         (chips ? `<span class="vchips">${chips}</span>` : "") +
         `<span class="comp-stat" data-status="${esc(status)}">${esc(statusField(status))}</span>` +
       `</div>` +
-      `<div class="bars">${barsMarkup}</div>` +
+      `<div class="${barsCls}"${barsAttr}>${barsMarkup}</div>` +
       `<div class="comp-bot">` +
         `<span class="left">${win}m ago</span>` +
         `<span class="mid">${mid}</span>` +
@@ -160,7 +284,7 @@ function initIndex(host) {
         const el = document.createElement("div");
         el.className = "comp";
         el.dataset.pkg = c.package;
-        card = { el, sig: null };
+        card = { el, sig: null, lay: null };
         cards.set(c.package, card);
       }
       if (card.sig !== sig) {
@@ -169,7 +293,7 @@ function initIndex(host) {
         if (act && card.el.contains(act)) {
           focus = act.classList.contains("vchip") ? { v: act.dataset.v } : { name: true };
         }
-        card.el.innerHTML = cardHTML(c, v, win);
+        card.el.innerHTML = cardHTML(c, v, win, card.lay);
         card.sig = sig;
         if (focus) {
           const target = focus.name
@@ -184,6 +308,7 @@ function initIndex(host) {
     cards.forEach((card, pkg) => {
       if (!seen.has(pkg)) { card.el.remove(); cards.delete(pkg); }
     });
+    layoutBars(); // after the cards are in the document: sizes new rows, no-op at an unchanged width
   }
 
   // One delegated handler (survives re-renders). A chip filters its card's bars to
