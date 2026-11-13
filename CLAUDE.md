@@ -196,10 +196,11 @@ Cloudflare. **Phase 2 is not set up**; the cache headers below exist for it, and
   they drive the vantage filter below. The server renders a first version; `app.js`
   replaces it from `/api/overview`. The card code (`initCards`) is shared with the package page.
 - **Overview window (`handleOverview`, `slo.RollupPackagesTrimAlts`, `trimRollup`).** The overview fetches
-  91 minutes, classifies all 91 (every Evaluator, package and per-vantage, runs over the full 91, so a
-  degraded run starting at the window edge can differ by one block from a 90-minute fetch) and then trims
-  each package to exactly 90 blocks. If the NEWEST minute has no data (package bars), the newest block is
-  dropped, otherwise the oldest. The same block is dropped from the package bars and from every
+  blocks + DegradedForMin + 1 minutes (96 by default), classifies all of them (every Evaluator, package and
+  per-vantage, runs over the full fetch, so the DegradedForMin warm-up minutes let a degraded run that began
+  before the window show from the first displayed block) and then keeps the last 90 blocks of each package.
+  If the NEWEST minute has no data (package bars), the newest block is dropped too (race), the rest from the
+  oldest end. The same blocks are dropped from the package bars and from every
   vantage's bars. Status, age and uptime of the package and of each vantage are recomputed from the 90
   kept blocks (statuses are not re-classified). Only the overview bars use this: `/api/series`,
   `/api/scenarios`, `/incidents` (30 days), the SSR index (15 min) and the worker's Fetch are unchanged.
@@ -295,8 +296,8 @@ Cloudflare. **Phase 2 is not set up**; the cache headers below exist for it, and
 - The worker does not merge alt keys yet (KAN-412), see Per-package configuration.
 - The bar layout (device-pixel placement, centring and the moire fix) and the package-page card have not
   been checked in a browser.
-- The 91-minute trim is per package: each package decides on its own newest minute, so one package may
-  drop its newest block while another drops its oldest.
+- The overview trim is per package: each package decides on its own newest minute, so one package may
+  drop its newest block while another keeps it.
 - The live `/opt/flashproxy/sla` `website.json` and `worker.json` still need the `packages` list; they
   must be restarted and checked at deploy.
 - Phase 2 (Cloudflare caching) is not set up.
