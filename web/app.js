@@ -111,42 +111,21 @@ function initCards(host, only) {
     return bars.map((b) => splitBarHTML(b, byT.get(b.t))).join("");
   }
 
-  // Stepped block size for a row of n blocks in a container w pixels wide (the
-  // caller passes DEVICE pixels): whole pixels, block b and gap g. From large to small, g = max(1, round(b / 4)) (gap
-  // about 20% of the pitch b + g, accepted between 10% and 25%); the largest b
-  // whose row n*b + (n-1)*g fits wins. Below that (b = 2 and b = 1 cannot meet
-  // the ratio with a whole-pixel gap) the gap stays 1px; when even 1 + 1 does
-  // not fit, the row keeps 1 + 1 and scrolls. w = 0 (not laid out yet) gives the
-  // minimum size. Never throws.
-  function barLayout(w, n) {
-    w = Math.floor(Number(w)) || 0;
-    n = Math.max(1, Math.floor(Number(n)) || 0);
-    const total = (b, g) => n * b + (n - 1) * g;
-    for (let b = Math.floor(w / n); b >= 1; b--) {
-      const g = Math.max(1, Math.round(b * 0.25));
-      const ratio = g / (b + g);
-      if (ratio < 0.10 || ratio > 0.25) continue;
-      if (total(b, g) <= w) return { b, g, scroll: false };
-    }
-    if (total(2, 1) <= w) return { b: 2, g: 1, scroll: false };
-    return { b: 1, g: 1, scroll: w > 0 && total(1, 1) > w };
-  }
-
-  // The screen's device pixels per CSS pixel (display scaling, browser zoom).
-  function pixelRatio() {
-    const r = Number(typeof window !== "undefined" ? window.devicePixelRatio : 1);
-    return isFinite(r) && r > 0 ? r : 1;
-  }
+  // Shared device-pixel layout (bars.js, loaded before this script). Without it
+  // the bars keep their CSS minimum size.
+  const fb = window.flashBars;
+  if (!fb) console.error("bars.js is not loaded: the bars are not laid out");
 
   // Size and place every card's bars in DEVICE pixels: block b and gap g are
   // whole device pixels (barLayout on the container's width in device pixels),
-  // and each block is positioned absolutely at a whole device-pixel offset, so
-  // every block and gap is drawn the same size at any scaling or zoom. The row
-  // is centred in the container. The result is
+  // and each block is positioned absolutely at a whole device-pixel offset
+  // (placeBars), so every block and gap is drawn the same size at any scaling
+  // or zoom. The row is centred in the container. The result is
   // kept on the card and keyed (width, n, ratio, blocks drawn), so a data
   // refresh with nothing changed neither recomputes nor moves anything.
   function layoutBars() {
-    const dpr = pixelRatio();
+    if (!fb) return;
+    const dpr = fb.pixelRatio();
     cards.forEach((card) => {
       if (!card || !card.el) return;
       const el = card.el.querySelector(".bars");
@@ -161,67 +140,22 @@ function initCards(host, only) {
       let lay = card.lay;
       if (lay && lay.key === key && el.dataset.lay === key) return; // already placed
       if (!lay || lay.w !== wDev || lay.n !== n) {
-        lay = barLayout(wDev, n);
+        lay = fb.barLayout(wDev, n);
         lay.w = wDev; lay.n = n;
       }
       lay.key = key; lay.dpr = dpr;
       card.lay = lay;
-      const pitch = lay.b + lay.g;
-      // Centre the full row of n blocks: the leftover width is split evenly and
-      // the offset is a whole device pixel. The full series is used (not the m
-      // blocks drawn).
-      const total = n * lay.b + (n - 1) * lay.g;
-      const off = lay.scroll ? 0 : Math.max(0, Math.floor((wDev - total) / 2));
+      fb.placeBars(el, n, lay, wDev, dpr);
       const width = (lay.b / dpr) + "px";
-      for (let i = 0; i < m; i++) {
-        const k = kids[i];
-        if (!k || !k.style) continue;
-        k.style.left = ((off + i * pitch) / dpr) + "px";
-        k.style.width = width;
-      }
       el.style.setProperty("--bw", width);
       el.style.setProperty("--bg", (lay.g / dpr) + "px");
       el.dataset.lay = key;
-      el.classList.add("abs");
-      el.classList.toggle("scroll", !!lay.scroll);
       if (lay.scroll) el.scrollLeft = el.scrollWidth; // newest block in view
     });
   }
-  let layoutQueued = false;
-  function queueLayout() {
-    if (layoutQueued) return;
-    layoutQueued = true;
-    const run = () => { layoutQueued = false; layoutBars(); };
-    if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
-    else setTimeout(run, 50);
-  }
   // The bars' width follows the card list's width, so one observer on the list
   // covers every card (the bars elements themselves are replaced on re-render).
-  if (typeof ResizeObserver === "function") {
-    try { new ResizeObserver(queueLayout).observe(host); } catch (e) { /* resize listener below */ }
-  }
-  window.addEventListener("resize", queueLayout);
-  // The pixel ratio can change with no width change (window moved to another
-  // screen, zoom): a resolution query matches only the current ratio, so its
-  // change event means a new ratio. Lay out again and watch the new ratio.
-  // layoutBars also reads the ratio on every run, so a missed event is caught
-  // by the next resize or refresh.
-  function watchPixelRatio() {
-    if (typeof window.matchMedia !== "function") return;
-    try {
-      const mq = window.matchMedia(`(resolution: ${pixelRatio()}dppx)`);
-      if (!mq) return;
-      const onChange = () => {
-        if (typeof mq.removeEventListener === "function") mq.removeEventListener("change", onChange);
-        else if (typeof mq.removeListener === "function") mq.removeListener(onChange);
-        queueLayout();
-        watchPixelRatio();
-      };
-      if (typeof mq.addEventListener === "function") mq.addEventListener("change", onChange);
-      else if (typeof mq.addListener === "function") mq.addListener(onChange);
-    } catch (e) { /* layoutBars re-reads the ratio on every run */ }
-  }
-  watchPixelRatio();
+  if (fb) fb.watchLayout(host, layoutBars);
 
   // v = the chosen vantage (undefined = none). It only adds that vantage's lower
   // half to each bar; the status square, the status word and the uptime are

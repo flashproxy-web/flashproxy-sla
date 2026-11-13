@@ -511,6 +511,31 @@ func TestWeeklyRoute(t *testing.T) {
 	}
 }
 
+// The weekly bars are placed on device pixels by bars.js + weekly.js: the page
+// loads both (bars.js first), still emits the 84 blocks the scripts and the
+// CSS grid fallback expect, and both scripts are served.
+func TestWeeklyBarScripts(t *testing.T) {
+	cfg := Config{WebDir: "../../web"}
+	s := wkServer(t, cfg, time.Now)
+	prs := []slo.PackageRollup{{Package: "isp", UptimePct: 100, Bars: wkBars(wkT0, weeklyWindowMin, "operational")}}
+	if err := s.weekly.refresh(context.Background(), func(context.Context) (*weeklyData, error) { return buildWeekly(prs, cfg), nil }); err != nil {
+		t.Fatal(err)
+	}
+	body := wkGet(s, "/weekly").Body.String()
+	bars, weekly := strings.Index(body, `<script src="/bars.js"></script>`), strings.Index(body, `<script src="/weekly.js"></script>`)
+	if bars < 0 || weekly < bars {
+		t.Errorf("scripts: bars.js at %d, weekly.js at %d, want both, bars.js first", bars, weekly)
+	}
+	if n := strings.Count(body, `<div class="wk-b"`); n != 84 {
+		t.Errorf("%d blocks in the row, want 84", n)
+	}
+	for _, p := range []string{"/bars.js", "/weekly.js"} {
+		if w := wkGet(s, p); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "flashBars") {
+			t.Errorf("%s: %d, want 200 with the script", p, w.Code)
+		}
+	}
+}
+
 // A stale value keeps the same cache header; only the warning line is added.
 func TestWeeklyStaleFlag(t *testing.T) {
 	fetched := time.Unix(wkT0, 0)
@@ -591,7 +616,11 @@ func TestWeeklyTemplate(t *testing.T) {
 			t.Errorf("body lacks %q", want)
 		}
 	}
-	for _, not := range []string{`data-l="no data"`, "100.00%", "<script src", "ZgotmplZ", "more, see", "No SLA events", "Refresh is failing"} {
+	// The only scripts are the two that place the bars (TestWeeklyBarScripts).
+	if got := count(body, "<script src"); got != 2 {
+		t.Errorf("%d scripts loaded, want 2 (bars.js, weekly.js)", got)
+	}
+	for _, not := range []string{`data-l="no data"`, "100.00%", "ZgotmplZ", "more, see", "No SLA events", "Refresh is failing"} {
 		if strings.Contains(body, not) {
 			t.Errorf("body contains %q", not)
 		}

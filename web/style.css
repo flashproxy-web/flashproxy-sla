@@ -343,6 +343,12 @@ a.plain:hover { text-decoration: underline; }
 .wk-bars { display: grid; grid-template-columns: repeat(84, 1fr); gap: 2px; height: 28px; }
 .wk-b { display: flex; flex-direction: column-reverse; min-width: 0; }
 .wk-b i { flex: 0 1 0; min-height: 2px; }
+/* placed by weekly.js like the overview bars: every block sits at a whole
+   device-pixel offset (left and width set inline). Without the script the grid
+   above stays. */
+.wk-bars.abs { display: block; position: relative; overflow: hidden; }
+.wk-bars.abs.scroll { overflow-x: auto; overflow-y: hidden; }
+.wk-bars.abs .wk-b { position: absolute; top: 0; height: 100%; }
 .s-dn { background: var(--dn); }
 .s-deg { background: var(--deg); }
 .s-op { background: var(--op); }

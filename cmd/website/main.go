@@ -706,8 +706,8 @@ func (s *server) handlePackage(w http.ResponseWriter, r *http.Request, pkg strin
 func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	switch p := r.URL.Path; p {
 	case "/":
-	case "/app.js", "/style.css", "/favicon.svg":
-		// Only these three files are public; the templates in web_dir are not served.
+	case "/app.js", "/bars.js", "/weekly.js", "/style.css", "/favicon.svg":
+		// Only these files are public; the templates in web_dir are not served.
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		http.ServeFile(w, r, filepath.Join(s.cfg.WebDir, p[1:]))
 		return
