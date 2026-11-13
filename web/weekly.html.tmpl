@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FlashProxy Status - Last 7 Days</title>
+  <meta name="description" content="Availability of every FlashProxy product over the last 7 days in 2-hour blocks, with the 7-day uptime and the downtime and degradation events of the week." />
+  <link rel="canonical" href="{{.SiteURL}}/weekly" />
+  <meta name="robots" content="index,follow,max-image-preview:large" />
+  <meta name="theme-color" content="#0d1117" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="FlashProxy Status" />
+  <meta property="og:title" content="FlashProxy Status - Last 7 Days" />
+  <meta property="og:description" content="Availability of every FlashProxy product over the last 7 days, independently verifiable." />
+  <meta property="og:url" content="{{.SiteURL}}/weekly" />
+  <link rel="stylesheet" href="/style.css" />
+  <script type="application/ld+json">{{.JSONLD}}</script>
+</head>
+<body>
+  <div class="wrap">
+    <header class="head">
+      <div class="brand">flashproxy<span class="slash">/</span>status</div>
+      <div class="updated">Data as of {{.AsOf}}</div>
+    </header>
+
+    <nav class="subnav"><a href="/">&larr; Live status</a> &middot; <a href="/incidents">Past incidents</a> &middot; <a href="/sla">100% Uptime SLA</a></nav>
+
+    <section class="intro">
+      <h1>Last 7 Days</h1>
+      <p>Every product over the last 7 days, one block per 2 hours. A product is <strong>Down</strong> only when every vantage point fails the same minute, and <strong>Degraded</strong> when its best-vantage average response time stays above the product's threshold for five consecutive minutes.</p>
+      <p>Data as of {{.AsOf}}{{if .WindowEnd}} (window ends {{.WindowEnd}}){{end}}.{{if .Stale}} <strong>Refresh is failing; showing the last good data.</strong>{{end}}{{if .OverallHasData}} All products: {{.Overall}} (pooled by minute, not an SLA figure).{{end}}</p>
+    </section>
+
+    <div class="legend wk-legend" aria-label="Block colours">
+      <span><i class="s-dn"></i>down</span>
+      <span><i class="s-deg"></i>degraded</span>
+      <span><i class="s-op"></i>operational</span>
+      <span><i class="s-nd"></i>no data</span>
+      <span>one block = 2 hours; segment heights = minutes in each state; grey = minutes without data</span>
+    </div>
+
+    {{if .Rows}}
+    <section class="wk">
+      {{range .Rows}}
+      <div class="wk-row">
+        <div class="wk-head">
+          <a class="wk-name" href="/{{.Package}}">{{.Name}}</a>
+          <span class="wk-up">{{.Uptime}}</span>
+          {{if .HasData}}<span class="wk-cnt" title="{{.DownMin}} down, {{.DegradedMin}} degraded, {{.NoDataMin}} no data minutes">{{.DownEvents}} down, {{.DegradedEvents}} degraded</span>{{end}}
+        </div>
+        <div class="wk-bars" role="img" aria-label="Availability of {{.Name}}, last 7 days, {{.Uptime}}">
+          {{range .Blocks}}<div class="wk-b" data-l="{{.Label}}" title="{{.Title}}">{{if .Down}}<i class="s-dn" style="flex-grow:{{.Down}}"></i>{{end}}{{if .Deg}}<i class="s-deg" style="flex-grow:{{.Deg}}"></i>{{end}}{{if .Op}}<i class="s-op" style="flex-grow:{{.Op}}"></i>{{end}}{{if .NoData}}<i class="s-nd" style="flex-grow:{{.NoData}}"></i>{{end}}</div>
+          {{end}}
+        </div>
+      </div>
+      {{end}}
+    </section>
+    {{end}}
+
+    {{if .Events}}
+    <section class="incidents">
+      {{range .Events}}
+      <div class="inc" data-status="{{.Severity}}">
+        <div class="inc-top">
+          <span class="inc-pkg">{{.Name}}</span>
+          <span class="comp-stat" data-status="{{.Severity}}">{{.SeverityLabel}}</span>
+        </div>
+        <div class="inc-bot">
+          <span class="inc-when">{{.Start}} &rarr; {{.End}} &middot; {{.Worst}}</span>
+          <span class="inc-dur">{{.Duration}}</span>
+        </div>
+      </div>
+      {{end}}
+    </section>
+    <p class="inc-note">{{.EventsTotal}} event{{if ne .EventsTotal 1}}s{{end}} in the last 7 days{{if .EventsMore}} &middot; + {{.EventsMore}} more, see <a href="/incidents">past incidents</a>{{end}}</p>
+    {{else if .OverallHasData}}
+    <div class="banner" data-status="operational">
+      <span class="dot"></span>
+      <span class="banner-text">No SLA events in the last 7 days.</span>
+    </div>
+    {{else}}
+    <div class="banner" data-status="no_data">
+      <span class="dot"></span>
+      <span class="banner-text">No data for the last 7 days.</span>
+    </div>
+    {{end}}
+
+    <p class="inc-note">This page is rebuilt every 5 minutes and may be cached for up to an hour, so it can be about 65 minutes behind. Events here are cut at the edges of the 7-day window and can differ at those edges from <a href="/incidents">past incidents</a>, which covers 30 days and carries the official statements.</p>
+
+    <footer class="foot">
+      synthetic probes &middot; <a href="/" class="plain">live status</a> &middot; <a href="/incidents" class="plain">past incidents</a> &middot; <a href="/sla" class="plain">100% Uptime SLA</a> &middot;
+      <a href="https://github.com/flashproxy-web/flashproxy-sla">source</a>
+    </footer>
+  </div>
+</body>
+</html>

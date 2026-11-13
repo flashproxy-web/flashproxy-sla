@@ -148,6 +148,9 @@ type server struct {
 	incTmpl *template.Template
 	pkgTmpl *template.Template
 
+	weekly     *weeklyCache
+	weeklyTmpl *template.Template
+
 	readyMu sync.Mutex
 	readyAt time.Time
 	readyOK bool
@@ -165,8 +168,34 @@ func main() {
 		slaTmpl: template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "sla.html.tmpl"))),
 		incTmpl: template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "incidents.html.tmpl"))),
 		pkgTmpl: template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "package.html.tmpl"))),
+
+		weekly:     &weeklyCache{now: time.Now},
+		weeklyTmpl: template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "weekly.html.tmpl"))),
+	}
+	s.startWeekly(context.Background()) // no graceful shutdown: ends with the process
+
+	srv := &http.Server{
+		Addr:              cfg.Listen,
+		Handler:           s.middleware(s.routes()),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second, // > chstore's 15s client timeout
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    1 << 16,
+		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
 	}
 
+	if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+		log.Printf("website (read-only, TLS) listening on %s as ch-user=%q", cfg.Listen, cfg.ClickHouse.User)
+		log.Fatal(srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile))
+	}
+	log.Printf("website (read-only) listening on %s as ch-user=%q", cfg.Listen, cfg.ClickHouse.User)
+	log.Fatal(srv.ListenAndServe())
+}
+
+// routes registers every route. An exact pattern wins over the "/" subtree, so a
+// package named like a route cannot take it over.
+func (s *server) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/overview", s.handleOverview)
 	mux.HandleFunc("/api/status", s.handleStatus)
@@ -182,25 +211,9 @@ func main() {
 	mux.HandleFunc("/llms.txt", s.handleLLMs)
 	mux.HandleFunc("/sla", s.handleSLA)
 	mux.HandleFunc("/incidents", s.handleIncidents)
+	mux.HandleFunc("/weekly", s.handleWeekly)
 	mux.HandleFunc("/", s.handleRoot) // SSR for "/", three static files, /<package> detail pages
-
-	srv := &http.Server{
-		Addr:              cfg.Listen,
-		Handler:           s.middleware(mux),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      30 * time.Second, // > chstore's 15s client timeout
-		IdleTimeout:       60 * time.Second,
-		MaxHeaderBytes:    1 << 16,
-		TLSConfig:         &tls.Config{MinVersion: tls.VersionTLS12},
-	}
-
-	if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
-		log.Printf("website (read-only, TLS) listening on %s as ch-user=%q", cfg.Listen, cfg.ClickHouse.User)
-		log.Fatal(srv.ListenAndServeTLS(cfg.TLSCertFile, cfg.TLSKeyFile))
-	}
-	log.Printf("website (read-only) listening on %s as ch-user=%q", cfg.Listen, cfg.ClickHouse.User)
-	log.Fatal(srv.ListenAndServe())
+	return mux
 }
 
 // middleware adds panic recovery and baseline security headers to every response.
@@ -1044,8 +1057,9 @@ func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
   <url><loc>%s/</loc><lastmod>%s</lastmod><changefreq>hourly</changefreq><priority>1.0</priority></url>
   <url><loc>%s/sla</loc><lastmod>%s</lastmod><changefreq>monthly</changefreq><priority>0.9</priority></url>
   <url><loc>%s/incidents</loc><lastmod>%s</lastmod><changefreq>hourly</changefreq><priority>0.7</priority></url>
+  <url><loc>%s/weekly</loc><lastmod>%s</lastmod><changefreq>hourly</changefreq><priority>0.6</priority></url>
 </urlset>
-`, s.cfg.SiteURL, today, s.cfg.SiteURL, today, s.cfg.SiteURL, today)
+`, s.cfg.SiteURL, today, s.cfg.SiteURL, today, s.cfg.SiteURL, today, s.cfg.SiteURL, today)
 }
 
 func (s *server) handleLLMs(w http.ResponseWriter, r *http.Request) {
