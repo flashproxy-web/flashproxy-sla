@@ -35,23 +35,16 @@
     "long_session_interval_ms": 180000, "long_session_hold_ms": 20000
   },
 
-  "packages": [
-    { "short": "datacenter",       "alt": "dc",        "name": "Datacenter",          "target_ms": 50,   "covered": true },
-    { "short": "ipv6-datacenter",  "alt": "ipv6-dc",   "name": "IPv6 Datacenter",     "target_ms": 50,   "covered": true },
-    { "short": "isp",              "alt": null,        "name": "Shared ISP · USA",    "target_ms": 50,   "covered": true },
-    { "short": "ipv6-residential", "alt": "ipv6",      "name": "IPv6 Residential",    "target_ms": 50,   "covered": true },
-    { "short": "isp_eu",           "alt": "isp-eu",    "name": "Shared ISP · EU",     "target_ms": 50,   "covered": true },
-    { "short": "residential",      "alt": "resi",      "name": "Residential",         "target_ms": 1000, "covered": true },
-    { "short": "residential-lite", "alt": "lite",      "name": "Residential Lite",    "target_ms": 1000, "covered": true },
-    { "short": "mobile",           "alt": "mobile",    "name": "Mobile",              "target_ms": 2000, "covered": true },
-    { "short": "mobile_usa",       "alt": "mobile_us", "name": "Mobile USA",          "target_ms": 2000, "covered": true }
-  ],
-
   "slo": {
     "degraded_avg_ms": 50,
     "degraded_for_min": 5,
     "down_success_pct": 90,
-    "stale_seconds": 120
+    "stale_seconds": 120,
+    "//package_degraded_ms": "Per-package Degraded threshold in whole ms (1..60000), keyed by the exact probe package name (the 'package' of a target); it applies to rows written under that key only, so list a product's old and new name while both exist. Unlisted packages use degraded_avg_ms. Also the adaptive alert gate's base per package.",
+    "package_degraded_ms": {
+      "residential": 1000, "residential-lite": 1000, "mobile": 2000, "mobile_usa": 2000,
+      "resi": 1000, "lite": 1000, "mobile_us": 2000
+    }
   },
 
   "//connect_targets": "The connect scenario probes a stratified sample of this pool each cycle: the origin (group 'origin', ALWAYS probed = availability floor) plus one endpoint from each of GroupsPerCycle other provider groups. Best result wins (lowest ttfb); Down only if every sampled endpoint fails. All are HTTP/80 connectivity checks with a fetchable body or 204 — never :443 CONNECT-only (that zeros ttfb). The pool below is shared; give v6 packages the v6 origin. The legacy singular connect_target/origin_get is still honored as a one-element fallback.",

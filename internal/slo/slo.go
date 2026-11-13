@@ -44,12 +44,16 @@ type SLO struct {
 	DegradedForMin int     `json:"degraded_for_min"` // consecutive over-threshold minutes that trigger Degraded
 	DownSuccessPct float64 `json:"down_success_pct"` // connect success% below which a minute is Down
 	StaleSeconds   int64   `json:"stale_seconds"`    // age of newest data beyond which status is no_data
-	// Packages is the configured package list (top-level "packages" in worker.json
-	// and website.json). It is not part of the "slo" JSON block: the config loaders
-	// copy it here so the per-package Degraded threshold (target_ms) travels with
-	// the thresholds. Nil/empty = every package uses DegradedAvgMs.
-	Packages []Package `json:"-"`
+	// PackageDegradedMs is the per-package Degraded threshold in whole ms, keyed by
+	// the exact probe package name. The worker reads it from its config
+	// ("slo.package_degraded_ms", checked by CheckPackageDegradedMs); the website
+	// loader overwrites it from its "packages" list (PackageTargets). An unusable
+	// value (see TargetValid) is ignored. Nil/empty = every package uses DegradedAvgMs.
+	PackageDegradedMs map[string]float64 `json:"package_degraded_ms,omitempty"`
 }
+
+// MaxPackageDegradedMs is the sanity cap for a "slo.package_degraded_ms" value.
+const MaxPackageDegradedMs = 60000
 
 // PackageKeyRe is the form of a package key (short or alt).
 var PackageKeyRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
@@ -101,9 +105,59 @@ func (p Package) AltKey() string {
 	return *p.Alt
 }
 
-// TargetValid reports whether TargetMs is usable as a threshold: a whole number >= 1.
-func (p Package) TargetValid() bool {
-	return p.TargetMs >= 1 && p.TargetMs == math.Trunc(p.TargetMs)
+// TargetValid reports whether ms is usable as a per-package threshold: a whole number >= 1.
+func TargetValid(ms float64) bool {
+	return ms >= 1 && ms == math.Trunc(ms)
+}
+
+// UsableTargets splits a per-package threshold map (SLO.PackageDegradedMs) into
+// the usable entries (TargetValid), as whole ms, and the sorted keys of the entries
+// that are ignored. valid is nil when no entry is usable.
+func UsableTargets(m map[string]float64) (valid map[string]int, ignored []string) {
+	for _, pkg := range sortedKeys(m) {
+		if !TargetValid(m[pkg]) {
+			ignored = append(ignored, pkg)
+			continue
+		}
+		if valid == nil {
+			valid = map[string]int{}
+		}
+		valid[pkg] = int(m[pkg])
+	}
+	return valid, ignored
+}
+
+// PackageTargets returns short key -> target_ms for the entries that set one: the
+// "packages" list in the form of SLO.PackageDegradedMs. Nil when no entry has one.
+func PackageTargets(pkgs []Package) map[string]float64 {
+	var m map[string]float64
+	for _, p := range pkgs {
+		if p.TargetMs == 0 {
+			continue
+		}
+		if m == nil {
+			m = map[string]float64{}
+		}
+		m[p.Short] = p.TargetMs
+	}
+	return m
+}
+
+// CheckPackageDegradedMs validates a per-package threshold map (the worker's
+// "slo.package_degraded_ms", the website's PackageTargets): every key must
+// be a valid package name and no value may exceed MaxPackageDegradedMs. Values that
+// are merely unusable (below 1, not whole) are not errors: they are ignored (see
+// TargetValid). An empty map is valid.
+func CheckPackageDegradedMs(m map[string]float64) error {
+	for _, pkg := range sortedKeys(m) {
+		if !PackageKeyRe.MatchString(pkg) {
+			return fmt.Errorf("slo.package_degraded_ms: key %q is not a valid package name", pkg)
+		}
+		if m[pkg] > MaxPackageDegradedMs {
+			return fmt.Errorf("slo.package_degraded_ms[%q]: %v ms is above the %d ms cap", pkg, m[pkg], MaxPackageDegradedMs)
+		}
+	}
+	return nil
 }
 
 // FindPackage returns the list entry whose short key is short.
@@ -137,7 +191,7 @@ func AltMap(pkgs []Package) map[string]string {
 // every non-null alt must be a valid package name, must not be the short key of
 // another entry (no chains), and two entries must not share one alt. Identity
 // pairs (alt == short) mean "no alt key" and are allowed. target_ms is not
-// checked here: an unusable value is ignored (see Package.TargetValid).
+// checked here: an unusable value is ignored (see TargetValid).
 func CheckPackages(pkgs []Package) error {
 	shorts := map[string]bool{}
 	for i, p := range pkgs {
@@ -173,13 +227,13 @@ func CheckPackages(pkgs []Package) error {
 }
 
 // ForPackage returns s with DegradedAvgMs replaced by the package's own threshold
-// (target_ms of its "packages" entry) when one is configured; otherwise s
+// (its PackageDegradedMs entry) when one is configured; otherwise s
 // unchanged. Callers apply withDefaults after.
 func (s SLO) ForPackage(pkg string) SLO {
 	// Unusable values (below 1 ms, not whole) are ignored (global threshold
 	// applies), same rule as the worker's alert gate.
-	if p, ok := FindPackage(s.Packages, pkg); ok && p.TargetValid() {
-		s.DegradedAvgMs = p.TargetMs
+	if ms, ok := s.PackageDegradedMs[pkg]; ok && TargetValid(ms) {
+		s.DegradedAvgMs = ms
 	}
 	return s
 }
@@ -588,14 +642,35 @@ func RollupPackages(ctx context.Context, ch *chstore.Client, db string, windowMi
 }
 
 // RollupPackagesAlts is RollupPackages over the fetched minutes after MergeAlts
-// (alts: the "packages" list). With nil alts it is RollupPackages.
+// (alts: the "packages" list). With nil alts it is RollupPackages. Only packages
+// with data in the window are returned.
 func RollupPackagesAlts(ctx context.Context, ch *chstore.Client, db string, windowMin int, s SLO, alts []Package) ([]PackageRollup, error) {
+	out, _, err := rollupAlts(ctx, ch, db, windowMin, s, alts, false)
+	return out, err
+}
+
+// RollupPackagesShown is RollupPackagesAlts for the status page: every package of
+// the "packages" list is returned, one without data in the window as no_data.
+// Packages not in the list still appear only when they have data.
+func RollupPackagesShown(ctx context.Context, ch *chstore.Client, db string, windowMin int, s SLO, pkgs []Package) ([]PackageRollup, error) {
+	out, _, err := rollupAlts(ctx, ch, db, windowMin, s, pkgs, true)
+	return out, err
+}
+
+// rollupAlts fetches windowMin minutes, applies MergeAlts and rolls up every
+// package (sorted). With seed, every short key of pkgs that has no rows gets an
+// empty series first, so the rollup emits it with no_data. It also returns the
+// time the grid was built for.
+func rollupAlts(ctx context.Context, ch *chstore.Client, db string, windowMin int, s SLO, pkgs []Package, seed bool) ([]PackageRollup, time.Time, error) {
 	s = s.withDefaults()
 	data, err := fetchMinutes(ctx, ch, db, windowMin)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
-	data = MergeAlts(data, alts)
+	data = MergeAlts(data, pkgs)
+	if seed {
+		data = seedPackages(data, pkgs)
+	}
 	now := time.Now()
 	grid := Grid(now, windowMin)
 	out := make([]PackageRollup, 0, len(data))
@@ -604,7 +679,22 @@ func RollupPackagesAlts(ctx context.Context, ch *chstore.Client, db string, wind
 		pr.Package = pkg
 		out = append(out, pr)
 	}
-	return out, nil
+	return out, now, nil
+}
+
+// seedPackages returns data with an empty series under every short key of pkgs
+// that has none. The input is not modified.
+func seedPackages(data map[string]map[string]map[int64]Minute, pkgs []Package) map[string]map[string]map[int64]Minute {
+	out := make(map[string]map[string]map[int64]Minute, len(data)+len(pkgs))
+	for pkg, byVantage := range data {
+		out[pkg] = byVantage
+	}
+	for _, p := range pkgs {
+		if _, ok := out[p.Short]; !ok {
+			out[p.Short] = nil
+		}
+	}
+	return out
 }
 
 // RollupPackagesTrimAlts is RollupPackagesAlts for a window of exactly `blocks`
@@ -624,6 +714,7 @@ func RollupPackagesTrimAlts(ctx context.Context, ch *chstore.Client, db string, 
 		return nil, err
 	}
 	data = MergeAlts(data, alts)
+	data = seedPackages(data, alts) // configured products always appear, even with no rows
 	now := time.Now()
 	grid := Grid(now, fetched)
 	out := make([]PackageRollup, 0, len(data))

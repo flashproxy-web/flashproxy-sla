@@ -263,9 +263,10 @@ Cloudflare. **Phase 2 is not set up**; the cache headers below exist for it, and
 
 ### Per-package configuration (`packages`)
 
-- One list, `packages`, at the TOP LEVEL of `worker.json` and `website.json` (and the example files)
-  holds everything per product. The old `slo.package_degraded_ms`, `package_names` and `package_alts`
-  maps are removed. Each entry:
+- One list, `packages`, at the TOP LEVEL of `website.json` (and its example file) holds everything
+  per product for the website. The worker reads `slo.package_degraded_ms` instead (a map keyed by
+  probe name, old and new names both allowed); a worker config with a `packages` key refuses to
+  start. The old `package_names` and `package_alts` maps are removed. Each entry:
   - `short`: the real key, used internally (routes, ledger, rollup, `data-pkg`, thresholds, alerts).
   - `alt`: the old live key, or `null`; its rows are merged into `short` during the cutover overlap.
   - `name`: display text; absent = the short key. Present but empty is a config error.

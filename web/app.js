@@ -269,7 +269,8 @@ function initCards(host, only) {
       `<div class="comp-bot">` +
         `<span class="left">${win}m ago</span>` +
         `<span class="mid">${mid}</span>` +
-        `<span class="right">uptime ${(uptime ?? 100).toFixed(1)}% · now</span>` +
+        // No uptime value for a window without a single data minute.
+        `<span class="right">${barSeries(c.bars).some((b) => statusKey(b) !== "no_data") ? `uptime ${(uptime ?? 100).toFixed(1)}% · ` : ""}now</span>` +
       `</div>`;
   }
 

@@ -80,7 +80,7 @@ func TestCheckPackageAlts(t *testing.T) {
 // The shipped example configs must parse and pass the packages check, and carry
 // the names, alts and thresholds of the list.
 func TestExampleConfigAlts(t *testing.T) {
-	for _, f := range []string{"website", "worker"} {
+	for _, f := range []string{"website"} {
 		b, err := os.ReadFile("../../config/" + f + ".example.json")
 		if err != nil {
 			t.Fatal(err)
@@ -109,7 +109,7 @@ func TestExampleConfigAlts(t *testing.T) {
 				t.Errorf("%s: altKey(%s) = %q, want none", f, pkg, got)
 			}
 		}
-		c.SLO.Packages = c.Packages
+		c.SLO.PackageDegradedMs = slo.PackageTargets(c.Packages)
 		for pkg, want := range map[string]float64{"datacenter": 50, "residential-lite": 1000, "mobile_usa": 2000, "unlisted": 50} {
 			if got := c.SLO.DegradedThresholdFor(pkg); got != want {
 				t.Errorf("%s: DegradedThresholdFor(%s) = %v, want %v", f, pkg, got, want)

@@ -179,13 +179,14 @@ JSON with `${ENV}` expansion so secrets never live in the file.
 - `config/worker.example.json` — vantage id, ClickHouse (writer) creds, the
   origin(s) for payload scenarios, scrape hosts, scenario intervals, and the list of
   probe `targets` → `proxy_url` (e.g. `${ISP_PROXY_URL}`), target, and IP version, plus the `slo` block
-  and the same `packages` list. The example holds probe entries for residential, residential-lite,
+  with `slo.package_degraded_ms` (per-package thresholds keyed by probe name, old and new names both allowed). The example holds probe entries for residential, residential-lite,
   mobile and mobile_usa; they are not in the live worker config.
 
-### `packages` (top level of `worker.json` and `website.json`)
+### `packages` (top level of `website.json`)
 
-One list, one entry per product (replaces the removed `slo.package_degraded_ms`, `package_names`
-and `package_alts`):
+One list, one entry per product, read by the website (replaces the removed `package_names` and
+`package_alts`). The worker reads `slo.package_degraded_ms` instead (probe names, old and new both
+allowed); a worker config with a `packages` key refuses to start:
 
 - `short` — the real key (routes, ledger, rollup, `data-pkg`, thresholds, alerts).
 - `alt` — the old live key, or `null`. The website merges alt-key rows into `short` per product,
