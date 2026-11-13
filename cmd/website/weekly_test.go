@@ -451,7 +451,7 @@ func TestWeeklyCacheLoop(t *testing.T) {
 
 func wkServer(t *testing.T, cfg Config, now func() time.Time) *server {
 	t.Helper()
-	tmpl, err := template.ParseFiles("../../web/weekly.html.tmpl")
+	tmpl, err := template.ParseFiles("../../web/weekly.html.tmpl", "../../web/partials.html.tmpl")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -496,7 +496,7 @@ func TestWeeklyRoute(t *testing.T) {
 		t.Errorf("Content-Type %q", ct)
 	}
 	body := w.Body.String()
-	for _, want := range []string{"<h1>Last 7 Days</h1>", `href="https://status.example/weekly"`, "No SLA events in the last 7 days.", "</html>"} {
+	for _, want := range []string{"<title>FlashProxy SLA - Last 7 Days</title>", `href="https://status.example/weekly"`, "No SLA events in the last 7 days.", "</html>"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("warm body lacks %q", want)
 		}

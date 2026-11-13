@@ -10,7 +10,7 @@
   <meta name="theme-color" content="#0d1117" />
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <meta property="og:type" content="website" />
-  <meta property="og:site_name" content="FlashProxy Status" />
+  <meta property="og:site_name" content="FlashProxy SLA" />
   <meta property="og:title" content="FlashProxy SLA — 100% Uptime Guarantee" />
   <meta property="og:description" content="100% uptime guarantee with automatic compensation, independently verifiable via open-source monitoring and a public metrics database." />
   <meta property="og:url" content="{{.SiteURL}}/sla" />
@@ -20,13 +20,9 @@
 </head>
 <body>
   <div class="wrap">
-    <header class="head">
-      <div class="brand"><a href="/" class="plain">flashproxy<span class="slash">/</span>status</a></div>
-      <div class="updated"><a href="/" class="plain">← live status</a></div>
-    </header>
+    {{template "header" .}}
 
     <article class="sla">
-      <h1>FlashProxy Service Level Agreement</h1>
       <p class="sla-sub"><strong>100% Uptime Guarantee</strong> · automatic compensation · independently verifiable. Current network status: <a href="/" class="plain">{{.OverallLabel}}</a> · {{.Updated}}.</p>
       <p class="muted"><em>Version 2.1 · Governed by and incorporated into the <a href="https://flashproxy.com/terms">Terms of Service</a>.</em></p>
 
@@ -113,10 +109,7 @@
       <p>This SLA is the customer's sole and exclusive remedy for availability and performance shortfalls. Total compensation in any month will not exceed the limits stated in §5 and §6. FlashProxy may revise this SLA with at least 30 days' notice; the current version is always published at <a href="/sla" class="plain">status.flashproxy.com/sla</a>. Capitalized terms not defined here have the meaning given in the Terms of Service.</p>
     </article>
 
-    <footer class="foot">
-      <a href="/" class="plain">← live status</a> · <a href="/incidents" class="plain">past incidents</a> · <a href="/weekly" class="plain">weekly view</a> · open source &amp; independently verifiable ·
-      <a href="https://github.com/flashproxy-web/flashproxy-sla">source</a>
-    </footer>
+    {{template "footer" .}}
   </div>
 </body>
 </html>

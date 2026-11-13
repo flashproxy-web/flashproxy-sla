@@ -164,13 +164,13 @@ func main() {
 	s := &server{
 		cfg:     cfg,
 		ch:      chstore.New(cfg.ClickHouse.URL, cfg.ClickHouse.DB, cfg.ClickHouse.User, cfg.ClickHouse.Password),
-		tmpl:    template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "index.html.tmpl"))),
-		slaTmpl: template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "sla.html.tmpl"))),
-		incTmpl: template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "incidents.html.tmpl"))),
-		pkgTmpl: template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "package.html.tmpl"))),
+		tmpl:    parsePage(cfg.WebDir, "index.html.tmpl"),
+		slaTmpl: parsePage(cfg.WebDir, "sla.html.tmpl"),
+		incTmpl: parsePage(cfg.WebDir, "incidents.html.tmpl"),
+		pkgTmpl: parsePage(cfg.WebDir, "package.html.tmpl"),
 
 		weekly:     &weeklyCache{now: time.Now},
-		weeklyTmpl: template.Must(template.ParseFiles(filepath.Join(cfg.WebDir, "weekly.html.tmpl"))),
+		weeklyTmpl: parsePage(cfg.WebDir, "weekly.html.tmpl"),
 	}
 	s.startWeekly(context.Background()) // no graceful shutdown: ends with the process
 
@@ -192,6 +192,24 @@ func main() {
 	log.Printf("website (read-only) listening on %s as ch-user=%q", cfg.Listen, cfg.ClickHouse.User)
 	log.Fatal(srv.ListenAndServe())
 }
+
+// parsePage parses one page template together with the shared header and footer
+// (partials.html.tmpl). The page file comes first, so Execute renders the page.
+func parsePage(webDir, page string) *template.Template {
+	return template.Must(template.ParseFiles(filepath.Join(webDir, page), filepath.Join(webDir, "partials.html.tmpl")))
+}
+
+// pageHead is what the shared header needs from a page. Every page data struct
+// embeds it.
+type pageHead struct {
+	Crumb     string // page name shown after "FlashProxy SLA / "; "" for none
+	Active    string // "weekly" | "incidents": the bracket link shown bold; "" for none
+	UpdatedAt string // time of the data on the page, headTimeFmt in UTC
+}
+
+const headTimeFmt = "2006-01-02 15:04 MST" // UTC times: "2026-11-13 17:17 UTC"
+
+func headTime(t time.Time) string { return t.UTC().Format(headTimeFmt) }
 
 // routes registers every route. An exact pattern wins over the "/" subtree, so a
 // package named like a route cannot take it over.
@@ -521,6 +539,7 @@ type idxProduct struct {
 }
 
 type idxData struct {
+	pageHead
 	SiteURL       string
 	OverallStatus string
 	OverallLabel  string
@@ -566,7 +585,7 @@ func vantageList(prs []slo.PackageRollup) (int, string) {
 
 const jsonLD = `[
 {"@context":"https://schema.org","@type":"Organization","name":"FlashProxy","url":"https://flashproxy.com","description":"High-performance HTTP and SOCKS5 proxies with Shared ISP, Datacenter, IPv6 Datacenter, and IPv6 Residential IP options."},
-{"@context":"https://schema.org","@type":"WebSite","name":"FlashProxy Status","url":"https://status.flashproxy.com"},
+{"@context":"https://schema.org","@type":"WebSite","name":"FlashProxy SLA","url":"https://status.flashproxy.com"},
 {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
 {"@type":"Question","name":"Is FlashProxy operational right now?","acceptedAnswer":{"@type":"Answer","text":"FlashProxy's live operational status, uptime, and latency are published on status.flashproxy.com and updated continuously from US and EU vantage points."}},
 {"@type":"Question","name":"What proxy products does FlashProxy offer?","acceptedAnswer":{"@type":"Answer","text":"FlashProxy offers Shared ISP proxies (USA and EU), Datacenter proxies, IPv6 Datacenter proxies, and IPv6 Residential proxies, over HTTP and SOCKS5."}},
@@ -591,7 +610,9 @@ const slaJSONLD = `[
 
 // buildIndex computes a current snapshot (best vantage per product) for SSR.
 func (s *server) buildIndex(r *http.Request) idxData {
-	d := idxData{SiteURL: s.cfg.SiteURL, OverallStatus: "no_data", OverallLabel: "Awaiting Data", Updated: "Updated " + time.Now().UTC().Format("2006-01-02 15:04 MST"), JSONLD: template.JS(jsonLD)}
+	// One clock reading for the header and the body: the time this snapshot was taken.
+	now := headTime(time.Now())
+	d := idxData{pageHead: pageHead{UpdatedAt: now}, SiteURL: s.cfg.SiteURL, OverallStatus: "no_data", OverallLabel: "Awaiting Data", Updated: "Updated " + now, JSONLD: template.JS(jsonLD)}
 	prs, err := slo.RollupPackagesShown(r.Context(), s.ch, s.cfg.ClickHouse.DB, 15, s.cfg.SLO, s.cfg.Packages)
 	if err != nil {
 		log.Printf("buildIndex: %v", err)
@@ -625,6 +646,7 @@ type pkgVantage struct {
 }
 
 type pkgData struct {
+	pageHead
 	SiteURL        string
 	Package        string
 	Name           string // display name
@@ -665,7 +687,9 @@ func (s *server) handlePackage(w http.ResponseWriter, r *http.Request, pkg strin
 		return
 	}
 	d := pkgData{
-		SiteURL: s.cfg.SiteURL, Package: pkg, Name: s.cfg.DisplayName(pkg),
+		// SSR time; app.js replaces it on every overview refresh.
+		pageHead: pageHead{Crumb: s.cfg.DisplayName(pkg), UpdatedAt: headTime(time.Now())},
+		SiteURL:  s.cfg.SiteURL, Package: pkg, Name: s.cfg.DisplayName(pkg),
 		DegradedMs:     fmtMs(s.cfg.SLO.DegradedThresholdFor(pkg)),
 		DegradedForMin: s.cfg.SLO.DegradedForMin,
 	}
@@ -739,6 +763,7 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleSLA(w http.ResponseWriter, r *http.Request) {
 	d := s.buildIndex(r)
 	d.JSONLD = template.JS(slaJSONLD)
+	d.Crumb = "Service Level Agreement"
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=300")
 	if err := s.slaTmpl.Execute(w, d); err != nil {
@@ -772,8 +797,8 @@ type statementRow struct {
 }
 
 type incidentsData struct {
+	pageHead
 	SiteURL    string
-	Updated    string
 	Incidents  []incidentView
 	Packages   []string  // filter chips: overview packages + any package with an incident
 	Chips      []pkgChip // Packages in the same order, with display names
@@ -789,7 +814,7 @@ type pkgChip struct {
 }
 
 const incidentsJSONLD = `[
-{"@context":"https://schema.org","@type":"WebPage","name":"FlashProxy Status — Past Incidents","url":"https://status.flashproxy.com/incidents","description":"History of FlashProxy proxy downtime and degradation incidents, detected automatically by an open-source prober and committed to a public, signed, hash-chained integrity ledger."}
+{"@context":"https://schema.org","@type":"WebPage","name":"FlashProxy SLA — Past Incidents","url":"https://status.flashproxy.com/incidents","description":"History of FlashProxy proxy downtime and degradation incidents, detected automatically by an open-source prober and committed to a public, signed, hash-chained integrity ledger."}
 ]`
 
 func humanDur(sec int64) string {
@@ -831,8 +856,8 @@ const incidentsWindowMin = 30 * 24 * 60 // 30 days
 // operator-authored official statement.
 func (s *server) buildIncidents(r *http.Request) incidentsData {
 	d := incidentsData{
+		pageHead:   pageHead{Active: "incidents", UpdatedAt: headTime(time.Now())},
 		SiteURL:    s.cfg.SiteURL,
-		Updated:    "Updated " + time.Now().UTC().Format("2006-01-02 15:04 MST"),
 		WindowDays: incidentsWindowMin / (24 * 60),
 		JSONLD:     template.JS(incidentsJSONLD),
 	}
@@ -1065,7 +1090,7 @@ func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleLLMs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	d := s.buildIndex(r)
-	fmt.Fprintf(w, "# FlashProxy Status\n\n")
+	fmt.Fprintf(w, "# FlashProxy SLA\n\n")
 	fmt.Fprintf(w, "> Live uptime and latency for FlashProxy's proxy network, measured continuously by synthetic probes from %d global vantage points (%s).\n\n", d.VantageCount, d.VantagesText)
 	fmt.Fprintf(w, "Current overall status: %s (%s).\n\n", d.OverallLabel, d.Updated)
 	fmt.Fprintf(w, "## Products monitored\n\n")

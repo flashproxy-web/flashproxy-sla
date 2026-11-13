@@ -3,32 +3,28 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>FlashProxy Status — Live Proxy Uptime, Latency &amp; Throughput</title>
+  <title>FlashProxy SLA — Live Proxy Uptime, Latency &amp; Throughput</title>
   <meta name="description" content="Live operational status, uptime, and latency for FlashProxy proxy services — Shared ISP, Datacenter, IPv6 Datacenter, and IPv6 Residential — measured continuously from US and EU vantage points." />
   <link rel="canonical" href="{{.SiteURL}}/" />
   <meta name="robots" content="index,follow,max-image-preview:large" />
   <meta name="theme-color" content="#0d1117" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <meta property="og:type" content="website" />
-  <meta property="og:site_name" content="FlashProxy Status" />
-  <meta property="og:title" content="FlashProxy Status — Live Proxy Uptime &amp; Latency" />
+  <meta property="og:site_name" content="FlashProxy SLA" />
+  <meta property="og:title" content="FlashProxy SLA — Live Proxy Uptime &amp; Latency" />
   <meta property="og:description" content="Live status, uptime, and latency for FlashProxy proxy services, measured continuously from US and EU vantage points." />
   <meta property="og:url" content="{{.SiteURL}}/" />
   <meta name="twitter:card" content="summary" />
-  <meta name="twitter:title" content="FlashProxy Status" />
+  <meta name="twitter:title" content="FlashProxy SLA" />
   <meta name="twitter:description" content="Live proxy uptime &amp; latency, measured from multiple regions." />
   <link rel="stylesheet" href="/style.css" />
   <script type="application/ld+json">{{.JSONLD}}</script>
 </head>
 <body>
   <div class="wrap">
-    <header class="head">
-      <div class="brand">flashproxy<span class="slash">/</span>status</div>
-      <div class="updated" id="updated">{{.Updated}}</div>
-    </header>
+    {{template "header" .}}
 
     <section class="intro">
-      <h1>FlashProxy Status</h1>
       <p>Live uptime and latency for the FlashProxy proxy network — Shared ISP (USA &amp; EU), Datacenter, IPv6 Datacenter, and IPv6 Residential proxies. Every number on this page is recorded by an open-source prober that measures each product continuously from multiple global vantage points.</p>
       <p class="sla-cta">Backed by our <a href="/sla">100% Uptime SLA</a> — automatic compensation for any downtime, independently verifiable from the open-source code and public metrics database.</p>
     </section>
@@ -82,10 +78,7 @@
       <p>Synthetic probes run continuously from {{.VantageCount}} global vantage points ({{.VantagesText}}), measuring round-trip response time, gateway network round-trip (TCP connect RTT), throughput, success rate, and a direct no-proxy baseline for every product. The methodology and code are open source and fully reproducible.</p>
     </section>
 
-    <footer class="foot">
-      synthetic probes · <a href="/sla" class="plain">100% Uptime SLA</a> · <a href="/incidents" class="plain">past incidents</a> · <a href="/weekly" class="plain">weekly view</a> · every value on this page was recorded by this open-source app ·
-      <a href="https://github.com/flashproxy-web/flashproxy-sla">source</a>
-    </footer>
+    {{template "footer" .}}
   </div>
   <script src="/bars.js"></script>
   <script src="/app.js"></script>

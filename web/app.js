@@ -299,7 +299,10 @@ function initCards(host, only) {
     overview = d;
 
     const updated = document.getElementById("updated");
-    if (updated && d && d.generated_at) updated.textContent = "updated " + new Date(d.generated_at).toLocaleTimeString();
+    // header: time of this refresh, same format as the server-rendered value
+    // ("updated 2026-11-13 17:17 UTC")
+    const gen = d.generated_at ? new Date(d.generated_at) : null;
+    if (updated && gen && !isNaN(gen)) updated.textContent = "updated " + gen.toISOString().slice(0, 16).replace("T", " ") + " UTC";
     const banner = document.getElementById("banner");
     if (banner && d.overall) {
       banner.dataset.status = d.overall.status;

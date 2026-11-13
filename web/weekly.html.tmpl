@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>FlashProxy Status - Last 7 Days</title>
+  <title>FlashProxy SLA - Last 7 Days</title>
   <meta name="description" content="Availability of every FlashProxy product over the last 7 days in 2-hour blocks, with the 7-day uptime and the downtime and degradation events of the week." />
   <link rel="canonical" href="{{.SiteURL}}/weekly" />
   <meta name="robots" content="index,follow,max-image-preview:large" />
   <meta name="theme-color" content="#0d1117" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <meta property="og:type" content="website" />
-  <meta property="og:site_name" content="FlashProxy Status" />
-  <meta property="og:title" content="FlashProxy Status - Last 7 Days" />
+  <meta property="og:site_name" content="FlashProxy SLA" />
+  <meta property="og:title" content="FlashProxy SLA - Last 7 Days" />
   <meta property="og:description" content="Availability of every FlashProxy product over the last 7 days, independently verifiable." />
   <meta property="og:url" content="{{.SiteURL}}/weekly" />
   <link rel="stylesheet" href="/style.css" />
@@ -19,15 +19,9 @@
 </head>
 <body>
   <div class="wrap">
-    <header class="head">
-      <div class="brand">flashproxy<span class="slash">/</span>status</div>
-      <div class="updated">Data as of {{.AsOf}}</div>
-    </header>
-
-    <nav class="subnav"><a href="/">&larr; Live status</a> &middot; <a href="/incidents">Past incidents</a> &middot; <a href="/sla">100% Uptime SLA</a></nav>
+    {{template "header" .}}
 
     <section class="intro">
-      <h1>Last 7 Days</h1>
       <p>Every product over the last 7 days, one block per 2 hours. A product is <strong>Down</strong> only when every vantage point fails the same minute, and <strong>Degraded</strong> when its best-vantage average response time stays above the product's threshold for five consecutive minutes.</p>
       <p>Data as of {{.AsOf}}{{if .WindowEnd}} (window ends {{.WindowEnd}}){{end}}.{{if .Stale}} <strong>Refresh is failing; showing the last good data.</strong>{{end}}{{if .OverallHasData}} All products: {{.Overall}} (pooled by minute, not an SLA figure).{{end}}</p>
     </section>
@@ -88,10 +82,7 @@
 
     <p class="inc-note">This page is rebuilt every 5 minutes and may be cached for up to an hour, so it can be about 65 minutes behind. Events here are cut at the edges of the 7-day window and can differ at those edges from <a href="/incidents">past incidents</a>, which covers 30 days and carries the official statements.</p>
 
-    <footer class="foot">
-      synthetic probes &middot; <a href="/" class="plain">live status</a> &middot; <a href="/incidents" class="plain">past incidents</a> &middot; <a href="/sla" class="plain">100% Uptime SLA</a> &middot;
-      <a href="https://github.com/flashproxy-web/flashproxy-sla">source</a>
-    </footer>
+    {{template "footer" .}}
   </div>
   <script src="/bars.js"></script>
   <script src="/weekly.js"></script>

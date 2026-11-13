@@ -38,12 +38,21 @@ html, body {
 .wrap { max-width: 920px; margin: 0 auto; padding: 32px 16px 48px; }
 
 /* header */
+/* one line: site name [/ page name], bracket links, then the SLA link and the
+   update time pushed to the right corner. Nothing breaks inside an item; when the
+   line cannot fit (phone) whole items wrap and the right group stays on the right */
 .head {
-  display: flex; justify-content: space-between; align-items: baseline;
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px;
   padding-bottom: 14px; border-bottom: 1px solid var(--line-strong);
 }
 .brand { font-size: 15px; font-weight: 600; letter-spacing: -0.2px; }
-.brand .slash { color: var(--muted); margin: 0 1px; }
+.brand .slash { color: var(--muted); }
+.hnav { font-size: 12px; white-space: nowrap; }
+.head-r {
+  margin-left: auto; display: flex; flex-wrap: wrap; justify-content: flex-end;
+  align-items: baseline; gap: 0 10px; font-size: 12px; white-space: nowrap;
+}
+.head .bold { font-weight: 600; }
 .updated { color: var(--muted); font-size: 11px; }
 
 /* overall banner */
@@ -191,8 +200,6 @@ a.comp-name:focus-visible::after { outline: 2px solid var(--ink); outline-offset
 .keys .bar.split { display: inline-flex; width: 8px; height: 16px; vertical-align: -4px; }
 
 /* past-incidents page */
-.subnav { margin: 12px 2px 0; font-size: 12px; color: var(--muted); }
-.subnav a { color: var(--muted); }
 .incidents { border: 1px solid var(--line); border-bottom: none; margin-top: 8px; }
 .inc {
   padding: 13px 16px; border-bottom: 1px solid var(--line);
@@ -306,7 +313,6 @@ a.comp-name:focus-visible::after { outline: 2px solid var(--ink); outline-offset
 
 /* SEO/GEO prose sections */
 .intro { margin: 18px 0 4px; }
-.intro h1 { font-size: 20px; margin: 0 0 6px; }
 .intro p, .about p, .faq p { color: var(--muted); font-size: 13px; line-height: 1.6; max-width: 72ch; }
 .about, .faq { margin-top: 30px; border-top: 1px solid var(--line); padding-top: 14px; }
 .about h2, .faq h2 { font-size: 15px; margin: 14px 0 6px; color: var(--ink); }
@@ -319,7 +325,6 @@ a.plain:hover { text-decoration: underline; }
 .sla-cta { font-size: 13px; }
 .sla-cta a, .sla a { color: #2f7d3a; }
 .sla { max-width: 80ch; }
-.sla h1 { font-size: 22px; margin: 16px 0 4px; }
 .sla h2 { font-size: 16px; margin: 26px 0 6px; border-top: 1px solid var(--line); padding-top: 14px; }
 .sla .sla-sub { font-size: 14px; color: var(--ink); }
 .sla p, .sla li { font-size: 13px; line-height: 1.65; color: var(--ink); }

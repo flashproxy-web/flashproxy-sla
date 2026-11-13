@@ -1,0 +1,13 @@
+{{/* Shared header and footer of every page. Parsed with each page template
+     (parsePage in cmd/website/main.go); the page passes its data, which embeds
+     pageHead: .Crumb (page name after the site name, "" for none), .Active
+     ("weekly" | "incidents" | "": the bracket link shown bold), .UpdatedAt. */}}
+{{define "header"}}<header class="head">
+      <div class="brand"><a href="/" class="plain">FlashProxy SLA</a>{{if .Crumb}}<span class="slash"> / </span>{{.Crumb}}{{end}}</div>
+      <nav class="hnav" aria-label="Pages"><a href="/weekly" class="plain{{if eq .Active "weekly"}} bold{{end}}"{{if eq .Active "weekly"}} aria-current="page"{{end}}>[ Weekly ]</a> <a href="/incidents" class="plain{{if eq .Active "incidents"}} bold{{end}}"{{if eq .Active "incidents"}} aria-current="page"{{end}}>[ Incidents ]</a></nav>
+      <div class="head-r"><a href="/sla" class="plain bold">100% uptime SLA</a> <span class="updated" id="updated">updated {{.UpdatedAt}}</span></div>
+    </header>{{end}}
+{{define "footer"}}<footer class="foot">
+      synthetic probes · <a href="/sla" class="plain">100% Uptime SLA</a> · every value on this page was recorded by this open-source app ·
+      <a href="https://github.com/flashproxy-web/flashproxy-sla">source</a>
+    </footer>{{end}}

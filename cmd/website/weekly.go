@@ -38,7 +38,7 @@ const (
 )
 
 const weeklyJSONLD = `[
-{"@context":"https://schema.org","@type":"WebPage","name":"FlashProxy Status - Last 7 Days","url":"https://status.flashproxy.com/weekly","description":"Availability of every FlashProxy product over the last 7 days in 2-hour blocks, with the 7-day uptime and the downtime and degradation events of the week."}
+{"@context":"https://schema.org","@type":"WebPage","name":"FlashProxy SLA - Last 7 Days","url":"https://status.flashproxy.com/weekly","description":"Availability of every FlashProxy product over the last 7 days in 2-hour blocks, with the 7-day uptime and the downtime and degradation events of the week."}
 ]`
 
 // blockEvent is one incident's share of a block.
@@ -398,6 +398,7 @@ func (s *server) startWeekly(ctx context.Context) {
 
 type weeklyView struct {
 	*weeklyData
+	pageHead
 	SiteURL   string
 	AsOf      string
 	WindowEnd string // "" when no package has a bar (the template then omits it)
@@ -416,9 +417,10 @@ func (s *server) handleWeekly(w http.ResponseWriter, r *http.Request) {
 	}
 	v := weeklyView{
 		weeklyData: d, SiteURL: s.cfg.SiteURL,
-		AsOf:   d.FetchedAt.UTC().Format(weeklyTimeFmt),
-		Stale:  s.weekly.clock().Sub(d.FetchedAt) > weeklyStaleAfter,
-		JSONLD: template.JS(weeklyJSONLD),
+		pageHead: pageHead{Active: "weekly", UpdatedAt: headTime(d.FetchedAt)},
+		AsOf:     d.FetchedAt.UTC().Format(weeklyTimeFmt),
+		Stale:    s.weekly.clock().Sub(d.FetchedAt) > weeklyStaleAfter,
+		JSONLD:   template.JS(weeklyJSONLD),
 	}
 	if d.WindowEnd != 0 { // zero = no rollup rows or no bars: no window to name
 		v.WindowEnd = time.Unix(d.WindowEnd, 0).UTC().Format(weeklyTimeFmt)
