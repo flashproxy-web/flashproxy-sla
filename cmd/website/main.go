@@ -62,7 +62,7 @@ type Config struct {
 	// shown on the site, target_ms = its Degraded threshold, covered = carried only.
 	// The site shows one product under the short key: per vantage and minute the
 	// short-key row is used when one exists, otherwise the alt-key row
-	// (slo.MergeAlts). The loader copies the list into SLO.Packages.
+	// (slo.MergeAlts). The loader copies the thresholds into SLO.PackageDegradedMs.
 	Packages []slo.Package `json:"packages"`
 }
 
@@ -248,12 +248,14 @@ func loadConfig(p string) Config {
 	if err := checkPackageAlts(c.Packages); err != nil {
 		log.Fatalf("config: %v", err)
 	}
-	for _, p := range c.Packages {
-		if p.TargetMs != 0 && !p.TargetValid() {
-			log.Printf("config: packages[%q]: target_ms %v is not a whole number >= 1, ignored (global degraded_avg_ms applies)", p.Short, p.TargetMs)
-		}
+	c.SLO.PackageDegradedMs = slo.PackageTargets(c.Packages)
+	if err := slo.CheckPackageDegradedMs(c.SLO.PackageDegradedMs); err != nil {
+		log.Fatalf("config: packages target_ms: %v", err)
 	}
-	c.SLO.Packages = c.Packages
+	_, ignored := slo.UsableTargets(c.SLO.PackageDegradedMs)
+	for _, pkg := range ignored {
+		log.Printf("config: packages[%q]: target_ms %v is not a whole number >= 1, ignored (global degraded_avg_ms applies)", pkg, c.SLO.PackageDegradedMs[pkg])
+	}
 	return c
 }
 
@@ -473,9 +475,11 @@ func (s *server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	for _, p := range s.cfg.Packages {
 		pkgs = append(pkgs, metaPkg{Short: p.Short, Alt: s.cfg.altKey(p.Short), TargetMs: s.cfg.SLO.DegradedThresholdFor(p.Short)})
 	}
+	pub := s.cfg.SLO
+	pub.PackageDegradedMs = nil // published per package in "packages" below
 	writeJSON(w, map[string]any{
 		"public_clickhouse": s.cfg.PublicClickHouse,
-		"slo":               s.cfg.SLO,
+		"slo":               pub,
 		"packages":          pkgs,
 		"integrity": map[string]any{
 			"pubkey":            s.cfg.LedgerPubKey,
@@ -574,7 +578,7 @@ const slaJSONLD = `[
 // buildIndex computes a current snapshot (best vantage per product) for SSR.
 func (s *server) buildIndex(r *http.Request) idxData {
 	d := idxData{SiteURL: s.cfg.SiteURL, OverallStatus: "no_data", OverallLabel: "Awaiting Data", Updated: "Updated " + time.Now().UTC().Format("2006-01-02 15:04 MST"), JSONLD: template.JS(jsonLD)}
-	prs, err := slo.RollupPackagesAlts(r.Context(), s.ch, s.cfg.ClickHouse.DB, 15, s.cfg.SLO, s.cfg.Packages)
+	prs, err := slo.RollupPackagesShown(r.Context(), s.ch, s.cfg.ClickHouse.DB, 15, s.cfg.SLO, s.cfg.Packages)
 	if err != nil {
 		log.Printf("buildIndex: %v", err)
 		return d
