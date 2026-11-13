@@ -1,6 +1,7 @@
 package slo
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -311,6 +312,248 @@ func TestMonitorIgnoresFillingMinute(t *testing.T) {
 		got := statuses(data, time.Unix(c.now, 0), 10, testSLO, true)[0]
 		if got.ResponseMsAvg != c.ms || got.Vantage != "eu" || got.Status != c.status {
 			t.Fatalf("now=t0+%ds: got %s %vms via %q, want %s %vms via eu", c.now-t0, got.Status, got.ResponseMsAvg, got.Vantage, c.status, c.ms)
+		}
+	}
+}
+
+// Overview trim (trimRollup). The grid mirrors RollupPackagesTrimAlts: 90 blocks +
+// DegradedForMin (5) warm-up + 1 race minute = 96 fetched minutes.
+const trimBlocks = 90
+
+var trimFetched = trimBlocks + testSLO.withDefaults().DegradedForMin + 1
+
+// trimGrid returns an n-minute grid whose newest minute starts at a fixed aligned
+// time, and a `now` 10 s into that minute (so the newest data minute is fresh).
+func trimGrid(n int) ([]int64, int64) {
+	const end = int64(1_700_000_040) // minute-aligned
+	return Grid(time.Unix(end, 0), n), end + 10
+}
+
+// series fills byMinute for the grid indices where keep(i) is true.
+func series(grid []int64, avg float64, keep func(i int) bool) map[int64]Minute {
+	m := map[int64]Minute{}
+	for i, t := range grid {
+		if keep(i) {
+			m[t] = Minute{T: t, ResponseMsAvg: avg, SuccessPct: 100, Samples: 10}
+		}
+	}
+	return m
+}
+
+func all(int) bool { return true }
+
+// TestTrimRollupDegradedRunStartsBeforeWindow: a degraded run that began before the
+// displayed window reads degraded from the first displayed bar, because the warm-up
+// minutes are classified before the trim. Control: with only one extra minute (the
+// old 91-minute fetch) the first displayed bars read operational.
+func TestTrimRollupDegradedRunStartsBeforeWindow(t *testing.T) {
+	grid, now := trimGrid(trimFetched)
+	pr := rollupPackageSeries("pkg", map[string]map[int64]Minute{"us": series(grid, 80, all)}, grid, now, testSLO)
+	got := trimRollup(pr, trimBlocks, now, testSLO)
+	if len(got.Bars) != trimBlocks {
+		t.Fatalf("len: got %d want %d", len(got.Bars), trimBlocks)
+	}
+	for i, b := range got.Bars {
+		if b.Status != "degraded" {
+			t.Fatalf("bar %d: got %s want degraded", i, b.Status)
+		}
+	}
+	for i, b := range got.Vantages[0].Bars {
+		if b.Status != "degraded" {
+			t.Fatalf("vantage bar %d: got %s want degraded", i, b.Status)
+		}
+	}
+	if got.Status != "degraded" || got.UptimePct != 50 {
+		t.Fatalf("current: got %s %v%%, want degraded 50%%", got.Status, got.UptimePct)
+	}
+
+	// Control: 91 fetched, 90 shown. Kept indices 1..90 carry runs 2,3,4,5,...: the
+	// first DegradedForMin-2 displayed bars are operational run-up.
+	grid, now = trimGrid(trimBlocks + 1)
+	pr = rollupPackageSeries("pkg", map[string]map[int64]Minute{"us": series(grid, 80, all)}, grid, now, testSLO)
+	old := trimRollup(pr, trimBlocks, now, testSLO)
+	for i := 0; i < testSLO.DegradedForMin-2; i++ {
+		if old.Bars[i].Status != "operational" {
+			t.Fatalf("control bar %d: got %s want operational", i, old.Bars[i].Status)
+		}
+	}
+	if old.Bars[testSLO.DegradedForMin-2].Status != "degraded" {
+		t.Fatalf("control bar %d: got %s want degraded", testSLO.DegradedForMin-2, old.Bars[testSLO.DegradedForMin-2].Status)
+	}
+}
+
+// TestTrimRollupNewestMinuteEmpty: the newest minute has no data (race), so the
+// newest block is dropped and the rest from the oldest end: kept = indices 5..94.
+func TestTrimRollupNewestMinuteEmpty(t *testing.T) {
+	grid, now := trimGrid(trimFetched)
+	n := len(grid)
+	data := series(grid, 10, func(i int) bool { return i < n-1 })
+	pr := rollupPackageSeries("pkg", map[string]map[int64]Minute{"us": data}, grid, now, testSLO)
+	got := trimRollup(pr, trimBlocks, now, testSLO)
+	lo := n - trimBlocks - 1
+	if len(got.Bars) != trimBlocks || got.Bars[0].T != grid[lo] || got.Bars[trimBlocks-1].T != grid[n-2] {
+		t.Fatalf("kept %d bars %d..%d, want %d bars %d..%d", len(got.Bars), got.Bars[0].T, got.Bars[len(got.Bars)-1].T, trimBlocks, grid[lo], grid[n-2])
+	}
+	for _, b := range got.Bars {
+		if b.T == grid[n-1] {
+			t.Fatalf("newest (empty) minute %d must be dropped", b.T)
+		}
+	}
+	if got.Status != "operational" || got.AgeSeconds != now-grid[n-2] {
+		t.Fatalf("current: got %s age %d, want operational age %d", got.Status, got.AgeSeconds, now-grid[n-2])
+	}
+}
+
+// TestTrimRollupNewestMinuteHasData: newest minute kept, all dropped blocks from the
+// oldest end: kept = indices 6..95.
+func TestTrimRollupNewestMinuteHasData(t *testing.T) {
+	grid, now := trimGrid(trimFetched)
+	n := len(grid)
+	pr := rollupPackageSeries("pkg", map[string]map[int64]Minute{"us": series(grid, 10, all)}, grid, now, testSLO)
+	got := trimRollup(pr, trimBlocks, now, testSLO)
+	lo := n - trimBlocks
+	if len(got.Bars) != trimBlocks || got.Bars[0].T != grid[lo] || got.Bars[trimBlocks-1].T != grid[n-1] {
+		t.Fatalf("kept %d bars %d..%d, want %d bars %d..%d", len(got.Bars), got.Bars[0].T, got.Bars[len(got.Bars)-1].T, trimBlocks, grid[lo], grid[n-1])
+	}
+	if got.AgeSeconds != now-grid[n-1] {
+		t.Fatalf("age: got %d want %d", got.AgeSeconds, now-grid[n-1])
+	}
+}
+
+// TestTrimRollupVantagesTrimmedIdentically: every vantage keeps the same timestamps
+// as the package, in the race and the non-race case, and its Current is recomputed
+// from its kept bars only.
+func TestTrimRollupVantagesTrimmedIdentically(t *testing.T) {
+	grid, now := trimGrid(trimFetched)
+	n := len(grid)
+	warmup := func(i int) bool { return i < n-trimBlocks-1 } // data only in dropped warm-up minutes
+	for _, race := range []bool{true, false} {
+		a := series(grid, 10, func(i int) bool { return !race || i < n-1 })
+		b := series(grid, 10, warmup)
+		pr := rollupPackageSeries("pkg", map[string]map[int64]Minute{"a": a, "b": b}, grid, now, testSLO)
+		got := trimRollup(pr, trimBlocks, now, testSLO)
+		for _, vr := range got.Vantages {
+			if len(vr.Bars) != trimBlocks {
+				t.Fatalf("race=%v vantage %s: len %d want %d", race, vr.Vantage, len(vr.Bars), trimBlocks)
+			}
+			for i := range vr.Bars {
+				if vr.Bars[i].T != got.Bars[i].T {
+					t.Fatalf("race=%v vantage %s bar %d: t %d, package t %d", race, vr.Vantage, i, vr.Bars[i].T, got.Bars[i].T)
+				}
+			}
+			if vr.Current.Vantage != vr.Vantage {
+				t.Fatalf("race=%v: Current.Vantage %q want %q", race, vr.Current.Vantage, vr.Vantage)
+			}
+		}
+		// b's only data was in the dropped warm-up minutes: no data left in the window.
+		vb := got.Vantages[1]
+		if vb.Current.Status != "no_data" || vb.UptimePct != 100 || barsHaveData(vb.Bars) {
+			t.Fatalf("race=%v vantage b: got %s %v%%, want no_data 100%% and no data bars", race, vb.Current.Status, vb.UptimePct)
+		}
+		if va := got.Vantages[0]; va.Current.Status != "operational" {
+			t.Fatalf("race=%v vantage a: got %s want operational", race, va.Current.Status)
+		}
+	}
+
+	// A vantage whose bar count differs from the package's is left as is.
+	pr := PackageRollup{Bars: make([]Bar, trimFetched), Vantages: []VantageRollup{{Vantage: "x", Bars: make([]Bar, 3)}}}
+	if got := trimRollup(pr, trimBlocks, now, testSLO); len(got.Vantages[0].Bars) != 3 {
+		t.Fatalf("mismatched vantage: len %d want 3", len(got.Vantages[0].Bars))
+	}
+}
+
+// TestTrimRollupNoDataInsideWindowStaysNoData: a gap inside the window stays no_data,
+// breaks the degraded run (bars after it are run-up until DegradedForMin consecutive
+// over-threshold minutes), and uptime counts only data bars.
+func TestTrimRollupNoDataInsideWindowStaysNoData(t *testing.T) {
+	grid, now := trimGrid(trimFetched)
+	gap := func(i int) bool { return i >= 40 && i <= 42 }
+	data := series(grid, 80, func(i int) bool { return !gap(i) })
+	pr := rollupPackageSeries("pkg", map[string]map[int64]Minute{"us": data}, grid, now, testSLO)
+	got := trimRollup(pr, trimBlocks, now, testSLO)
+	lo := len(grid) - trimBlocks
+	for k, b := range got.Bars {
+		i := k + lo
+		want := "degraded"
+		switch {
+		case gap(i):
+			want = "no_data"
+		case i > 42 && i < 43+testSLO.DegradedForMin-1:
+			want = "operational"
+		}
+		if b.Status != want {
+			t.Fatalf("grid index %d: got %s want %s", i, b.Status, want)
+		}
+	}
+	// 87 data bars: 4 operational, 83 degraded -> (87 - 41.5)/87 = 52.30%.
+	if got.UptimePct != 52.3 {
+		t.Fatalf("uptime: got %v want 52.3", got.UptimePct)
+	}
+}
+
+// TestTrimRollupExactBlocksAndShort: n <= blocks and blocks < 1 return the rollup
+// unchanged; n == blocks+1 keeps the old rule (drop oldest, or newest when empty).
+func TestTrimRollupExactBlocksAndShort(t *testing.T) {
+	mk := func(n int, newestEmpty bool) PackageRollup {
+		bars := make([]Bar, n)
+		for i := range bars {
+			bars[i] = Bar{T: int64(i) * 60, Status: "operational", ResponseMsAvg: 10, SuccessPct: 100, Samples: 1}
+		}
+		if newestEmpty {
+			bars[n-1] = Bar{T: int64(n-1) * 60, Status: "no_data"}
+		}
+		vb := append([]Bar(nil), bars...)
+		return PackageRollup{Status: "x", UptimePct: 1, Bars: bars, Vantages: []VantageRollup{{Vantage: "v", Bars: vb}}}
+	}
+	for _, c := range []struct {
+		name   string
+		n, blk int
+	}{{"exact", 4, 4}, {"short", 3, 4}, {"zero blocks", 4, 0}, {"negative blocks", 4, -1}} {
+		pr := mk(c.n, false)
+		if got := trimRollup(pr, c.blk, 1000, testSLO); !reflect.DeepEqual(got, pr) {
+			t.Fatalf("%s: rollup changed: %+v", c.name, got)
+		}
+	}
+	for _, c := range []struct {
+		newestEmpty bool
+		firstT      int64
+	}{{false, 60}, {true, 0}} {
+		got := trimRollup(mk(5, c.newestEmpty), 4, 300, testSLO)
+		if len(got.Bars) != 4 || got.Bars[0].T != c.firstT || got.Vantages[0].Bars[0].T != c.firstT {
+			t.Fatalf("blocks+1 newestEmpty=%v: got %d bars from %d, want 4 from %d", c.newestEmpty, len(got.Bars), got.Bars[0].T, c.firstT)
+		}
+	}
+}
+
+// TestTrimRollupDoesNotReclassify: kept bars carry the statuses computed over the full
+// fetched sequence, element for element.
+func TestTrimRollupDoesNotReclassify(t *testing.T) {
+	grid, now := trimGrid(trimFetched)
+	n := len(grid)
+	for _, race := range []bool{true, false} {
+		data := map[int64]Minute{}
+		for i, tt := range grid {
+			if race && i == n-1 {
+				continue
+			}
+			avg, succ := 80.0, 100.0
+			if i%17 == 0 {
+				avg = 10
+			}
+			if i%29 == 0 {
+				succ = 0
+			}
+			data[tt] = Minute{T: tt, ResponseMsAvg: avg, SuccessPct: succ, Samples: 5}
+		}
+		full := rollupPackageSeries("pkg", map[string]map[int64]Minute{"us": data}, grid, now, testSLO)
+		want := append([]Bar(nil), full.Bars...)
+		got := trimRollup(full, trimBlocks, now, testSLO)
+		lo := n - trimBlocks
+		if race {
+			lo--
+		}
+		if !reflect.DeepEqual(got.Bars, want[lo:lo+trimBlocks]) {
+			t.Fatalf("race=%v: kept bars differ from the untrimmed classification", race)
 		}
 	}
 }

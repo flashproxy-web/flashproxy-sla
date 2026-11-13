@@ -300,11 +300,12 @@ type vantageView struct {
 }
 
 func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
-	// windowMin is the number of minute blocks every overview value uses. One minute
-	// more (91) is fetched and classified; then each package is trimmed to exactly
-	// windowMin blocks: the newest block is dropped if it has no data yet, otherwise
-	// the oldest (slo.RollupPackagesTrimAlts). Package and vantage bars of a component
-	// are the same blocks; align them by each bar's t.
+	// windowMin is the number of minute blocks every overview value uses. The window is
+	// fetched and classified with DegradedForMin warm-up minutes plus one race minute
+	// before it, then each package is trimmed to exactly windowMin blocks: the newest
+	// block is dropped if it has no data yet, the rest from the oldest end
+	// (slo.RollupPackagesTrimAlts). Package and vantage bars of a component are the
+	// same blocks; align them by each bar's t.
 	const windowMin = 90
 	// Cross-vantage rollup: a package is Down only when ALL vantages are down. The
 	// bars/status/uptime are the package-level (cross-vantage) values; per-vantage

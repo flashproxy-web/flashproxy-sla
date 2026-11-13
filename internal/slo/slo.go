@@ -608,19 +608,24 @@ func RollupPackagesAlts(ctx context.Context, ch *chstore.Client, db string, wind
 }
 
 // RollupPackagesTrimAlts is RollupPackagesAlts for a window of exactly `blocks`
-// minute blocks chosen from blocks+1 fetched minutes (the overview: 91 fetched, 90
-// used). The grid is blocks+1 minutes ending at the start of the current minute and
-// is fetched and classified in full, so every Evaluator (package and per-vantage)
-// runs over all blocks+1 minutes; only then is each package trimmed (trimRollup).
+// minute blocks (the overview). It fetches blocks + DegradedForMin + 1 minutes (96 for
+// 90 blocks and the default 5), derived from the SLO config, not hardcoded. Why: every
+// Evaluator (package and per-vantage) starts with run=0 at the oldest fetched minute,
+// and degraded needs DegradedForMin consecutive over-threshold minutes, so a run already
+// in progress when the displayed window opens could not read degraded in its first
+// minutes. The DegradedForMin minutes before the window are warm-up; the +1 is for the
+// race rule in trimRollup. The grid ends at the start of the current minute and is
+// classified in full; only then is each package trimmed to `blocks` (trimRollup).
 func RollupPackagesTrimAlts(ctx context.Context, ch *chstore.Client, db string, blocks int, s SLO, alts []Package) ([]PackageRollup, error) {
 	s = s.withDefaults()
-	data, err := fetchMinutes(ctx, ch, db, blocks+1)
+	fetched := blocks + s.DegradedForMin + 1 // blocks displayed + DegradedForMin warm-up + 1 race spare
+	data, err := fetchMinutes(ctx, ch, db, fetched)
 	if err != nil {
 		return nil, err
 	}
 	data = MergeAlts(data, alts)
 	now := time.Now()
-	grid := Grid(now, blocks+1)
+	grid := Grid(now, fetched)
 	out := make([]PackageRollup, 0, len(data))
 	for _, pkg := range sortedKeys(data) {
 		pr := rollupPackageSeries(pkg, data[pkg], grid, now.Unix(), s)
@@ -630,35 +635,42 @@ func RollupPackagesTrimAlts(ctx context.Context, ch *chstore.Client, db string, 
 	return out, nil
 }
 
-// trimRollup cuts an already classified rollup of blocks+1 minutes down to exactly
-// `blocks` minutes. The rule is decided once per package, on the PACKAGE bars: if the
-// newest minute has no data (no vantage reported it), the newest block is dropped;
-// otherwise the oldest block is dropped. The same block is dropped from the package
-// bars and from every vantage's bars, so all series hold the same `blocks` timestamps
-// in time order. Statuses are NOT re-classified (the consecutive-degraded run was
-// computed over the full sequence); the current status, age and uptime of the
-// package and of each vantage are recomputed from the kept bars only, so bars,
-// uptime, impact minutes, incidents (IncidentsFromBars over Bars) and status all use
-// the same blocks. A rollup that is not exactly blocks+1 long is returned as is.
+// trimRollup cuts an already classified rollup of n > blocks minutes down to exactly
+// `blocks` minutes by dropping n-blocks blocks. Race rule, decided once per package on
+// the PACKAGE bars: if the newest minute has no data (its rows have not landed yet, no
+// vantage reported it), that newest block is one of the dropped ones and the rest are
+// dropped from the oldest end, so the window does not end on a half-filled minute;
+// otherwise all are dropped from the oldest end and the newest is kept. The same blocks
+// are dropped from the package bars and from every vantage's bars of length n, so all
+// series hold the same `blocks` timestamps in time order. Statuses are NOT re-classified
+// (the consecutive-degraded run was computed over the full sequence, warm-up included);
+// the current status, age and uptime of the package and of each vantage are recomputed
+// from the kept bars only, so bars, uptime, impact minutes, incidents (IncidentsFromBars
+// over Bars) and status all use the same blocks. A rollup of n <= blocks minutes (or
+// blocks < 1) is returned as is.
 func trimRollup(pr PackageRollup, blocks int, now int64, s SLO) PackageRollup {
-	if blocks < 1 || len(pr.Bars) != blocks+1 {
+	n := len(pr.Bars)
+	if blocks < 1 || n <= blocks {
 		return pr
 	}
 	s = s.withDefaults()
-	lo := 1 // newest minute has data: drop the oldest block
-	if pr.Bars[blocks].Status == "no_data" {
-		lo = 0 // newest minute has no data: drop the newest block
+	// drop blocks go in total: all from the oldest end, or, when the newest minute
+	// has no data, the newest block plus drop-1 from the oldest end.
+	drop := n - blocks
+	lo := drop
+	if pr.Bars[n-1].Status == "no_data" {
+		lo = drop - 1
 	}
 	pr.Bars = pr.Bars[lo : lo+blocks : lo+blocks]
 	cur, uptime := summarizeBars(pr.Bars, now, s)
 	pr.Status, pr.ResponseMsAvg, pr.SuccessPct = cur.Status, cur.ResponseMsAvg, cur.SuccessPct
 	pr.Samples, pr.AgeSeconds, pr.UptimePct = cur.Samples, cur.AgeSeconds, uptime
 	if !barsHaveData(pr.Bars) {
-		pr.BestVantage = "" // the only data minute was the dropped one
+		pr.BestVantage = "" // every data minute was in the dropped blocks
 	}
 	vans := make([]VantageRollup, len(pr.Vantages))
 	for i, vr := range pr.Vantages {
-		if len(vr.Bars) == blocks+1 {
+		if len(vr.Bars) == n {
 			vr.Bars = vr.Bars[lo : lo+blocks : lo+blocks]
 			vr.Current, vr.UptimePct = summarizeBars(vr.Bars, now, s)
 			vr.Current.Vantage = vr.Vantage
