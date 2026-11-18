@@ -411,8 +411,7 @@ func (s *server) handleWeekly(w http.ResponseWriter, r *http.Request) {
 	d, ok := s.weekly.get()
 	if !ok {
 		w.Header().Set("Retry-After", "15")
-		w.Header().Set("Cache-Control", "no-store")
-		http.Error(w, "weekly data is warming up", http.StatusServiceUnavailable)
+		httpError(w, "weekly data is warming up", http.StatusServiceUnavailable)
 		return
 	}
 	v := weeklyView{
@@ -425,9 +424,11 @@ func (s *server) handleWeekly(w http.ResponseWriter, r *http.Request) {
 	if d.WindowEnd != 0 { // zero = no rollup rows or no bars: no window to name
 		v.WindowEnd = time.Unix(d.WindowEnd, 0).UTC().Format(weeklyTimeFmt)
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", weeklyCacheControl)
-	if err := s.weeklyTmpl.Execute(w, v); err != nil {
-		log.Printf("render weekly: %v", err)
+	cc := weeklyCacheControl
+	if v.Stale {
+		// Refresh is failing: the last good data is still served, but no cache
+		// may keep this degraded page.
+		cc = errorCacheControl
 	}
+	renderHTML(w, s.weeklyTmpl, v, cc, "weekly")
 }

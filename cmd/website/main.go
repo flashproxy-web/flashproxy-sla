@@ -241,7 +241,9 @@ func (s *server) middleware(h http.Handler) http.Handler {
 		defer func() {
 			if v := recover(); v != nil {
 				log.Printf("panic %s %s: %v", r.Method, r.URL.Path, v)
-				http.Error(w, "internal error", http.StatusInternalServerError)
+				// Overrides any success Cache-Control the handler set before it
+				// panicked (it has no effect once the header was written).
+				httpError(w, "internal error", http.StatusInternalServerError)
 			}
 		}()
 		hd := w.Header()
@@ -291,11 +293,67 @@ func loadConfig(p string) Config {
 	return c
 }
 
+// errorCacheControl is the Cache-Control of every error response: no browser
+// or CDN may keep an error, so the next request asks the origin again.
+const errorCacheControl = "no-store"
+
+// negativeCacheControl is the Cache-Control of the unknown-package 404: a
+// negative answer that may be cached briefly, so a package that starts
+// reporting data appears within a minute.
+const negativeCacheControl = "public, max-age=60"
+
+// httpError is http.Error with Cache-Control: no-store. Every error response of
+// the site goes through it (or notFound), so none can carry a max-age; the one
+// exception is unknownPackage (negativeCacheControl).
+func httpError(w http.ResponseWriter, msg string, code int) {
+	w.Header().Set("Cache-Control", errorCacheControl)
+	http.Error(w, msg, code)
+}
+
+// errorNoStoreWriter sets Cache-Control: no-store on any error status. It wraps
+// http.ServeFile, which (Go 1.23+) deletes Cache-Control before writing an error,
+// so a missing static file would otherwise be a 404 with no Cache-Control.
+type errorNoStoreWriter struct{ http.ResponseWriter }
+
+func (w errorNoStoreWriter) WriteHeader(code int) {
+	if code >= 400 {
+		w.Header().Set("Cache-Control", errorCacheControl)
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// notFound is http.NotFound with Cache-Control: no-store.
+func notFound(w http.ResponseWriter) {
+	httpError(w, "404 page not found", http.StatusNotFound)
+}
+
+// unknownPackage is the 404 for a well-formed package name with no probe rows:
+// same body as notFound, but cacheable for negativeCacheControl.
+func unknownPackage(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", negativeCacheControl)
+	http.Error(w, "404 page not found", http.StatusNotFound)
+}
+
 // fail logs the real error server-side and returns a generic message — never leak
 // ClickHouse SQL/schema/hostnames to the public.
 func (s *server) fail(w http.ResponseWriter, where string, err error) {
 	log.Printf("%s: %v", where, err)
-	http.Error(w, "upstream query failed", http.StatusBadGateway)
+	httpError(w, "upstream query failed", http.StatusBadGateway)
+}
+
+// renderHTML executes tmpl into a buffer first, so the success headers are set
+// only on a complete page. A render error is logged and answered with a 502
+// (no-store, generic body); no partial page is written.
+func renderHTML(w http.ResponseWriter, tmpl *template.Template, data any, cacheControl, where string) {
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, data); err != nil {
+		log.Printf("render %s: %v", where, err)
+		httpError(w, "page temporarily unavailable", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", cacheControl)
+	w.Write(buf.Bytes())
 }
 
 func (s *server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -383,7 +441,7 @@ func (s *server) handleOverview(w http.ResponseWriter, r *http.Request) {
 func (s *server) handleSeries(w http.ResponseWriter, r *http.Request) {
 	pkg := r.URL.Query().Get("package")
 	if !pkgRe.MatchString(pkg) {
-		http.Error(w, "bad package", http.StatusBadRequest)
+		httpError(w, "bad package", http.StatusBadRequest)
 		return
 	}
 	mins := 360
@@ -395,7 +453,7 @@ func (s *server) handleSeries(w http.ResponseWriter, r *http.Request) {
 	vantageFilter := ""
 	if v := r.URL.Query().Get("vantage"); v != "" {
 		if !pkgRe.MatchString(v) {
-			http.Error(w, "bad vantage", http.StatusBadRequest)
+			httpError(w, "bad vantage", http.StatusBadRequest)
 			return
 		}
 		vantageFilter = fmt.Sprintf(" AND vantage = '%s'", v)
@@ -426,13 +484,13 @@ GROUP BY scenario, t ORDER BY scenario, t`, s.cfg.ClickHouse.DB, s.pkgWhere(pkg,
 func (s *server) handleScenarios(w http.ResponseWriter, r *http.Request) {
 	pkg := r.URL.Query().Get("package")
 	if !pkgRe.MatchString(pkg) {
-		http.Error(w, "bad package", http.StatusBadRequest)
+		httpError(w, "bad package", http.StatusBadRequest)
 		return
 	}
 	vf := ""
 	if v := r.URL.Query().Get("vantage"); v != "" {
 		if !pkgRe.MatchString(v) {
-			http.Error(w, "bad vantage", http.StatusBadRequest)
+			httpError(w, "bad vantage", http.StatusBadRequest)
 			return
 		}
 		vf = fmt.Sprintf(" AND vantage = '%s'", v)
@@ -609,15 +667,17 @@ const slaJSONLD = `[
 ]}
 ]`
 
-// buildIndex computes a current snapshot (best vantage per product) for SSR.
-func (s *server) buildIndex(r *http.Request) idxData {
+// buildIndex computes a current snapshot (best vantage per product) for SSR. It
+// returns an error when the rollup query fails; callers answer 502 (no-store)
+// instead of serving an "Awaiting Data" page. An empty but successful rollup is
+// not an error.
+func (s *server) buildIndex(r *http.Request) (idxData, error) {
 	// One clock reading for the header and the body: the time this snapshot was taken.
 	now := headTime(time.Now())
 	d := idxData{pageHead: pageHead{UpdatedAt: now}, SiteURL: s.cfg.SiteURL, OverallStatus: "no_data", OverallLabel: "Awaiting Data", Updated: "Updated " + now, JSONLD: template.JS(jsonLD)}
 	prs, err := slo.RollupPackagesShown(r.Context(), s.ch, s.cfg.ClickHouse.DB, 15, s.cfg.SLO, s.cfg.Packages)
 	if err != nil {
-		log.Printf("buildIndex: %v", err)
-		return d
+		return d, err
 	}
 	statuses := []string{}
 	for _, pr := range prs {
@@ -633,7 +693,7 @@ func (s *server) buildIndex(r *http.Request) idxData {
 		d.OverallStatus, d.OverallLabel = slo.Overall(statuses)
 	}
 	d.VantageCount, d.VantagesText = vantageList(prs)
-	return d
+	return d, nil
 }
 
 func fmtMs(v float64) string { return strconv.FormatFloat(v, 'f', -1, 64) }
@@ -681,10 +741,9 @@ func (s *server) handlePackage(w http.ResponseWriter, r *http.Request, pkg strin
 		return
 	}
 	if !ok {
-		// Well-formed name with no probe rows: cacheable 404 (header only, the
-		// lookup above still runs on every request).
-		w.Header().Set("Cache-Control", "public, max-age=3600")
-		http.NotFound(w, r)
+		// Well-formed name with no probe rows: 404 with a short public TTL (a
+		// negative answer; a new package appears within a minute).
+		unknownPackage(w)
 		return
 	}
 	d := pkgData{
@@ -699,8 +758,9 @@ func (s *server) handlePackage(w http.ResponseWriter, r *http.Request, pkg strin
 	}
 	// Vantage chips: names only, from the same rollup "/" renders. Best-effort: on
 	// error (or no recent data) the page renders without chips and charts all vantages.
-	if prs, err := slo.RollupPackagesAlts(r.Context(), s.ch, s.cfg.ClickHouse.DB, 15, s.cfg.SLO, s.cfg.Packages); err != nil {
-		log.Printf("package vantages: %v", err)
+	prs, rollupErr := slo.RollupPackagesAlts(r.Context(), s.ch, s.cfg.ClickHouse.DB, 15, s.cfg.SLO, s.cfg.Packages)
+	if rollupErr != nil {
+		log.Printf("package vantages: %v", rollupErr)
 	} else {
 		for _, pr := range prs {
 			if pr.Package != pkg {
@@ -715,17 +775,17 @@ func (s *server) handlePackage(w http.ResponseWriter, r *http.Request, pkg strin
 			}
 		}
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if len(d.Vantages) > 0 {
-		w.Header().Set("Cache-Control", "public, max-age=300")
-	} else {
-		// No chips (rollup failed or had nothing for this package): do not let a
-		// cache keep the chip-less page.
-		w.Header().Set("Cache-Control", "no-cache")
+	cc := "public, max-age=300"
+	switch {
+	case rollupErr != nil:
+		// Degraded best-effort page (the rollup failed): 200, but never stored.
+		cc = errorCacheControl
+	case len(d.Vantages) == 0:
+		// The rollup had nothing for this package: revalidate, do not keep the
+		// chip-less page.
+		cc = "no-cache"
 	}
-	if err := s.pkgTmpl.Execute(w, d); err != nil {
-		log.Printf("render package: %v", err)
-	}
+	renderHTML(w, s.pkgTmpl, d, cc, "package")
 }
 
 func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -734,14 +794,14 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 	case "/app.js", "/bars.js", "/weekly.js", "/style.css", "/favicon.svg":
 		// Only these files are public; the templates in web_dir are not served.
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		http.ServeFile(w, r, filepath.Join(s.cfg.WebDir, p[1:]))
+		http.ServeFile(errorNoStoreWriter{w}, r, filepath.Join(s.cfg.WebDir, p[1:]))
 		return
 	default:
 		// Exactly one segment that is a valid package name, else 404. Dot-leading
 		// names and web_dir template names are never packages.
 		name := p[1:]
 		if !pkgRe.MatchString(name) || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".tmpl") {
-			http.NotFound(w, r)
+			notFound(w)
 			return
 		}
 		// Old (alt) key of a package: temporary redirect to its short key, before
@@ -754,22 +814,23 @@ func (s *server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		s.handlePackage(w, r, name)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=30")
-	if err := s.tmpl.Execute(w, s.buildIndex(r)); err != nil {
-		log.Printf("render index: %v", err)
+	d, err := s.buildIndex(r)
+	if err != nil {
+		s.fail(w, "buildIndex", err)
+		return
 	}
+	renderHTML(w, s.tmpl, d, "public, max-age=30", "index")
 }
 
 func (s *server) handleSLA(w http.ResponseWriter, r *http.Request) {
-	d := s.buildIndex(r)
+	d, err := s.buildIndex(r)
+	if err != nil {
+		s.fail(w, "buildIndex (sla)", err)
+		return
+	}
 	d.JSONLD = template.JS(slaJSONLD)
 	d.Crumb = "Service Level Agreement"
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=300")
-	if err := s.slaTmpl.Execute(w, d); err != nil {
-		log.Printf("render sla: %v", err)
-	}
+	renderHTML(w, s.slaTmpl, d, "public, max-age=300", "sla")
 }
 
 // --- Past incidents (human-facing downtime/degradation history) ---
@@ -862,11 +923,8 @@ const incidentsQueryTimeout = 25 * time.Second
 // request queries ClickHouse, and the CDN (Cloudflare) caches the 200 response.
 // The data changes minute by minute (ongoing incidents, durations), so 60 s is
 // the freshness target for browsers (max-age) and shared caches (s-maxage).
-// Errors are never cached.
-const (
-	incidentsCacheControl      = "public, max-age=60, s-maxage=60"
-	incidentsErrorCacheControl = "no-store"
-)
+// Errors carry errorCacheControl (no-store), like every error of the site.
+const incidentsCacheControl = "public, max-age=60, s-maxage=60"
 
 // buildIncidents enumerates Down/Degraded incidents over the window (rolled up in
 // ClickHouse from probe_raw by the published cross-vantage SLA contract), newest
@@ -1033,9 +1091,10 @@ func bestStatement(stmts []statementRow, pkg string, start, end int64) *statemen
 	return best
 }
 
-// handleIncidents renders the page into a buffer first, so the success
-// Cache-Control is set only on a complete page; a query or render failure is a
-// 502 with no-store (and a generic body), never a cacheable empty page.
+// handleIncidents renders the page into a buffer first (renderHTML), so the
+// success Cache-Control is set only on a complete page; a query or render
+// failure is a 502 with no-store (and a generic body), never a cacheable empty
+// page.
 func (s *server) handleIncidents(w http.ResponseWriter, r *http.Request) {
 	d, err := s.buildIncidents(r)
 	if err != nil {
@@ -1043,20 +1102,11 @@ func (s *server) handleIncidents(w http.ResponseWriter, r *http.Request) {
 		incidentsError(w)
 		return
 	}
-	var buf bytes.Buffer
-	if err := s.incTmpl.Execute(&buf, d); err != nil {
-		log.Printf("render incidents: %v", err)
-		incidentsError(w)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", incidentsCacheControl)
-	w.Write(buf.Bytes())
+	renderHTML(w, s.incTmpl, d, incidentsCacheControl, "incidents")
 }
 
 func incidentsError(w http.ResponseWriter) {
-	w.Header().Set("Cache-Control", incidentsErrorCacheControl)
-	http.Error(w, "incidents temporarily unavailable", http.StatusBadGateway)
+	httpError(w, "incidents temporarily unavailable", http.StatusBadGateway)
 }
 
 // handleReady is a readiness probe: it confirms ClickHouse is reachable (cached for
@@ -1080,7 +1130,7 @@ func (s *server) handleReady(w http.ResponseWriter, r *http.Request) {
 		s.readyMu.Unlock()
 	}
 	if !ok {
-		http.Error(w, "not ready", http.StatusServiceUnavailable)
+		httpError(w, "not ready", http.StatusServiceUnavailable)
 		return
 	}
 	fmt.Fprint(w, "ok")
@@ -1125,8 +1175,12 @@ func (s *server) handleSitemap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) handleLLMs(w http.ResponseWriter, r *http.Request) {
+	d, err := s.buildIndex(r)
+	if err != nil {
+		s.fail(w, "buildIndex (llms)", err)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	d := s.buildIndex(r)
 	fmt.Fprintf(w, "# FlashProxy SLA\n\n")
 	fmt.Fprintf(w, "> Live uptime and latency for FlashProxy's proxy network, measured continuously by synthetic probes from %d global vantage points (%s).\n\n", d.VantageCount, d.VantagesText)
 	fmt.Fprintf(w, "Current overall status: %s (%s).\n\n", d.OverallLabel, d.Updated)
@@ -1143,7 +1197,7 @@ func (s *server) handleLLMs(w http.ResponseWriter, r *http.Request) {
 func writeJSON(w http.ResponseWriter, v any) { writeJSONCache(w, "no-cache", v) }
 
 // writeJSONCache is writeJSON with an explicit Cache-Control. It is only called on
-// success, so error responses (http.Error, s.fail) never carry a max-age.
+// success; error responses go through httpError / s.fail, which set no-store.
 func writeJSONCache(w http.ResponseWriter, cacheControl string, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", cacheControl)

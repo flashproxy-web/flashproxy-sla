@@ -241,17 +241,20 @@ Cloudflare. **Phase 2 is not set up**; the cache headers below exist for it, and
   and to `/incidents?package=<name>`.
 - **Routing (`handleRoot`).** Exact routes win: `/sla`, `/incidents`, `/api/*`, `/healthz`, `/livez`,
   `/robots.txt`, `/sitemap.xml`, `/llms.txt`. Only `/app.js`, `/style.css`, `/favicon.svg` are served
-  as files (`no-cache, no-store, must-revalidate`); templates are never served. Any other single
+  as files (`no-cache, no-store, must-revalidate`; errors `no-store`); templates are never served. Any other single
   path segment matching `pkgRe` (`^[a-zA-Z0-9_.-]{1,64}$`) gets one primary-key-style lookup in
-  `probe_raw` (last 7 days): found = page; not found = 404 with `Cache-Control: public, max-age=3600`;
-  lookup error = 502 with no cache header. Two-segment paths, trailing slashes, names starting with `.`
+  `probe_raw` (last 7 days): found = page; unknown package = 404 with `public, max-age=60` (negative answer, short TTL so a new package appears within a minute); other 404s and every other error stay `no-store`. Two-segment paths, trailing slashes, names starting with `.`
   and names ending in `.tmpl` are 404 (no lookup). **Old-key redirect:** a request for `/<alt>`
   (an alt of the `packages` list that is not also a short key) returns `302` to `/<short>` with
   `Cache-Control: no-cache`, before any lookup. Website only.
 - **Cache headers.** `/api/overview` `public, max-age=14`; `/api/series` and `/api/scenarios`
-  `public, max-age=29` (success only; errors carry no max-age); package page `public, max-age=300` when its
-  vantage chips loaded, else `no-cache`; other JSON endpoints `no-cache`. Also set in code: `/` `max-age=30`,
-  `/sla` 300, `/incidents` `public, max-age=60, s-maxage=60` (no in-process cache; query or render failure = 502 `no-store`). No cookies, no `Vary`. These are meant for Phase 2.
+  `public, max-age=29` (success only); every error response is `no-store`, never cacheable, except an unknown package (404 `public, max-age=60`, a negative answer with a short TTL); package page `public, max-age=300` when its
+  vantage chips loaded, `no-cache` when the rollup had no chips for it, `no-store` (still 200) when the chip
+  rollup query failed; other JSON endpoints `no-cache`. Also set in code: `/` `max-age=30`,
+  `/sla` 300 (query or render failure = 502 `no-store`, no degraded 200 page), `/incidents`
+  `public, max-age=60, s-maxage=60` (no in-process cache; failure = 502 `no-store`). `/weekly` stale
+  (refresh failing) is served 200 `no-store`; cold start 503 `no-store` + Retry-After 15. Pages are rendered
+  into a buffer first (`renderHTML`). No cookies, no `Vary`. These are meant for Phase 2.
 - **Timers (`web/app.js`).** The index refreshes `/api/overview` every 15 s; the detail page refreshes
   series and scenarios every 30 s. Intent: only while the tab is visible. Actual: both `setInterval`s keep
   ticking while the tab is hidden and the tick skips the request; a `visibilitychange` to visible reloads at once.

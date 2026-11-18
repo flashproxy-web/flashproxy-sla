@@ -536,7 +536,8 @@ func TestWeeklyBarScripts(t *testing.T) {
 	}
 }
 
-// A stale value keeps the same cache header; only the warning line is added.
+// A stale value adds the warning line and is served with no-store (degraded
+// page); a fresh value keeps the public cache header.
 func TestWeeklyStaleFlag(t *testing.T) {
 	fetched := time.Unix(wkT0, 0)
 	now := fetched
@@ -552,7 +553,11 @@ func TestWeeklyStaleFlag(t *testing.T) {
 		now = fetched.Add(c.age)
 		w := wkGet(s, "/weekly")
 		body := w.Body.String()
-		if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != "public, max-age=3600" {
+		wantCC := "public, max-age=3600"
+		if c.stale {
+			wantCC = "no-store"
+		}
+		if w.Code != http.StatusOK || w.Header().Get("Cache-Control") != wantCC {
 			t.Errorf("age %v: %d Cache-Control %q", c.age, w.Code, w.Header().Get("Cache-Control"))
 		}
 		if got := strings.Contains(body, "Refresh is failing; showing the last good data."); got != c.stale {
