@@ -8,6 +8,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -845,26 +846,44 @@ func humanDur(sec int64) string {
 }
 
 // incidentsWindowMin bounds how far back /incidents enumerates incidents. They are
-// computed from probe_raw via slo.RollupIncidents — the SAME cross-vantage rollup,
-// SQL, and thresholds the credit engine (flash-staff-dash) uses — so a given outage
-// yields an identical (type, window) in both, rather than the monitor's coarser,
-// debounced event log.
+// computed in ClickHouse by slo.FetchIncidentsAlts (slo.IncidentsSQL over probe_raw),
+// which mirrors slo.RollupIncidentsAlts — the SAME cross-vantage rollup, minute
+// rounding and thresholds the credit engine (flash-staff-dash) uses — so a given
+// outage yields an identical (type, window) in both, rather than the monitor's
+// coarser, debounced event log. Only the incident rows leave ClickHouse, not the
+// per-minute series.
 const incidentsWindowMin = 30 * 24 * 60 // 30 days
 
-// buildIncidents enumerates Down/Degraded incidents over the window from probe_raw
-// (the published cross-vantage SLA contract), newest first, and attaches any
-// operator-authored official statement.
-func (s *server) buildIncidents(r *http.Request) incidentsData {
+// incidentsQueryTimeout bounds the incident query of one request, below the
+// website profile's 30 s max_execution_time.
+const incidentsQueryTimeout = 25 * time.Second
+
+// Cache-Control of /incidents. The page is not cached in the process: every
+// request queries ClickHouse, and the CDN (Cloudflare) caches the 200 response.
+// The data changes minute by minute (ongoing incidents, durations), so 60 s is
+// the freshness target for browsers (max-age) and shared caches (s-maxage).
+// Errors are never cached.
+const (
+	incidentsCacheControl      = "public, max-age=60, s-maxage=60"
+	incidentsErrorCacheControl = "no-store"
+)
+
+// buildIncidents enumerates Down/Degraded incidents over the window (rolled up in
+// ClickHouse from probe_raw by the published cross-vantage SLA contract), newest
+// first, and attaches any operator-authored official statement. It returns an
+// error only when the incident query fails; chips and statements are best-effort.
+func (s *server) buildIncidents(r *http.Request) (incidentsData, error) {
 	d := incidentsData{
 		pageHead:   pageHead{Active: "incidents", UpdatedAt: headTime(time.Now())},
 		SiteURL:    s.cfg.SiteURL,
 		WindowDays: incidentsWindowMin / (24 * 60),
 		JSONLD:     template.JS(incidentsJSONLD),
 	}
-	incs, err := slo.RollupIncidentsAlts(r.Context(), s.ch, s.cfg.ClickHouse.DB, incidentsWindowMin, s.cfg.SLO, s.cfg.Packages)
+	ctx, cancel := context.WithTimeout(r.Context(), incidentsQueryTimeout)
+	incs, err := slo.FetchIncidentsAlts(ctx, s.ch, s.cfg.ClickHouse.DB, incidentsWindowMin, s.cfg.SLO, s.cfg.Packages)
+	cancel()
 	if err != nil {
-		log.Printf("buildIncidents: %v", err)
-		return d
+		return d, err
 	}
 	// Filter chips come from the overview component list (same 90 min window), so a
 	// package without incidents still gets one. Best-effort.
@@ -940,7 +959,7 @@ func (s *server) buildIncidents(r *http.Request) incidentsData {
 		d.Incidents = append(d.Incidents, v)
 	}
 	d.Total = len(d.Incidents)
-	return d
+	return d, nil
 }
 
 // loadStatements reads published, de-duplicated editorial statements. It is
@@ -1014,12 +1033,30 @@ func bestStatement(stmts []statementRow, pkg string, start, end int64) *statemen
 	return best
 }
 
+// handleIncidents renders the page into a buffer first, so the success
+// Cache-Control is set only on a complete page; a query or render failure is a
+// 502 with no-store (and a generic body), never a cacheable empty page.
 func (s *server) handleIncidents(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "public, max-age=180") // 30-day rollup; history changes slowly
-	if err := s.incTmpl.Execute(w, s.buildIncidents(r)); err != nil {
-		log.Printf("render incidents: %v", err)
+	d, err := s.buildIncidents(r)
+	if err != nil {
+		log.Printf("buildIncidents: %v", err)
+		incidentsError(w)
+		return
 	}
+	var buf bytes.Buffer
+	if err := s.incTmpl.Execute(&buf, d); err != nil {
+		log.Printf("render incidents: %v", err)
+		incidentsError(w)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", incidentsCacheControl)
+	w.Write(buf.Bytes())
+}
+
+func incidentsError(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", incidentsErrorCacheControl)
+	http.Error(w, "incidents temporarily unavailable", http.StatusBadGateway)
 }
 
 // handleReady is a readiness probe: it confirms ClickHouse is reachable (cached for

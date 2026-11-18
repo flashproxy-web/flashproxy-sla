@@ -251,7 +251,7 @@ Cloudflare. **Phase 2 is not set up**; the cache headers below exist for it, and
 - **Cache headers.** `/api/overview` `public, max-age=14`; `/api/series` and `/api/scenarios`
   `public, max-age=29` (success only; errors carry no max-age); package page `public, max-age=300` when its
   vantage chips loaded, else `no-cache`; other JSON endpoints `no-cache`. Also set in code: `/` `max-age=30`,
-  `/sla` 300, `/incidents` 180. No cookies, no `Vary`. These are meant for Phase 2.
+  `/sla` 300, `/incidents` `public, max-age=60, s-maxage=60` (no in-process cache; query or render failure = 502 `no-store`). No cookies, no `Vary`. These are meant for Phase 2.
 - **Timers (`web/app.js`).** The index refreshes `/api/overview` every 15 s; the detail page refreshes
   series and scenarios every 30 s. Intent: only while the tab is visible. Actual: both `setInterval`s keep
   ticking while the tab is hidden and the tick skips the request; a `visibilitychange` to visible reloads at once.
