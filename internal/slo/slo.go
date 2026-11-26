@@ -830,7 +830,7 @@ type Incident struct {
 	Type    string `json:"type"`  // "down" | "degraded"
 	Start   int64  `json:"start"` // unix, inclusive first impacted minute
 	End     int64  `json:"end"`   // unix, exclusive (last impacted minute + 60)
-	Minutes int    `json:"minutes"`
+	Minutes int64  `json:"minutes"`
 }
 
 // IncidentsFromBars groups a package's classified minute Bars (already time-ordered)
@@ -847,7 +847,7 @@ func IncidentsFromBars(pkg string, bars []Bar) []Incident {
 			incs = append(incs, Incident{
 				Package: pkg, Type: curType,
 				Start: curStart, End: curEnd + 60,
-				Minutes: int((curEnd-curStart)/60) + 1,
+				Minutes: (curEnd-curStart)/60 + 1,
 			})
 		}
 	}

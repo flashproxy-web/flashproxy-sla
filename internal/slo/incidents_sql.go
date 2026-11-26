@@ -157,7 +157,7 @@ func FetchIncidentsAlts(ctx context.Context, ch *chstore.Client, db string, wind
 			Type:    chstore.Str(m, "type"),
 			Start:   chstore.Int64(m, "start", &decodeErr),
 			End:     chstore.Int64(m, "end", &decodeErr),
-			Minutes: int(chstore.Int64(m, "minutes", &decodeErr)),
+			Minutes: chstore.Int64(m, "minutes", &decodeErr),
 		}
 		out = append(out, inc)
 	}
